@@ -846,14 +846,16 @@
             }, []);
 
             // Helper pour obtenir un token valide (rafraîchi si nécessaire)
-            const getValidToken = async () => {
+            const getValidToken = async (forceRefresh = false) => {
                 try {
                     // Si Firebase Auth est disponible et un utilisateur est connecté
                     if (firebaseAuth && firebaseAuth.currentUser) {
                         // Forcer le rafraîchissement du token
-                        const freshToken = await firebaseAuth.currentUser.getIdToken(true);
+                        const freshToken = await firebaseAuth.currentUser.getIdToken(forceRefresh);
                         localStorage.setItem('authToken', freshToken);
-                        console.log('🔑 Token rafraîchi avec succès');
+                        if (forceRefresh) {
+                            console.log('🔑 Token rafraîchi avec succès');
+                        }
                         return freshToken;
                     }
                 } catch (error) {
@@ -864,15 +866,40 @@
                 return localStorage.getItem('authToken');
             };
 
+            // Helper pour les appels API avec gestion automatique du token expiré
+            const apiCallWithAuth = async (url, options = {}, retryCount = 0) => {
+                // Obtenir un token valide
+                const token = await getValidToken(retryCount > 0);
+                
+                if (!token) {
+                    throw new Error('No auth token available');
+                }
+                
+                const response = await fetch(url, {
+                    ...options,
+                    headers: {
+                        ...options.headers,
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                // Si token expiré (401), rafraîchir et réessayer une fois
+                if (response.status === 401 && retryCount < 1) {
+                    console.log('🔄 Token expiré, rafraîchissement en cours...');
+                    return apiCallWithAuth(url, options, retryCount + 1);
+                }
+                
+                return response;
+            };
+
             // Charger les prédictions de l'utilisateur depuis Firebase
             const fetchUserPredictions = async () => {
                 const token = localStorage.getItem('authToken');
                 if (!token) return;
 
                 try {
-                    const response = await fetch(`${API_BASE_URL}/predictions`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
+                    const response = await apiCallWithAuth(`${API_BASE_URL}/predictions`);
 
                     if (response.ok) {
                         const data = await response.json();
@@ -899,9 +926,7 @@
                 if (!token) return;
 
                 try {
-                    const response = await fetch(`${API_BASE_URL}/user/capital`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
+                    const response = await apiCallWithAuth(`${API_BASE_URL}/user/capital`);
 
                     if (response.ok) {
                         const data = await response.json();
@@ -1153,14 +1178,13 @@
 
                 // 3. Lancer l'analyse en arrière-plan
                 try {
-                    const response = await fetch(`${API_BASE_URL}/predictions/analyze`, {
-                        method: 'POST',
-                        headers: { 
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
-                        },
-                        body: JSON.stringify({ opportunityId, userBalance: balance, bookmaker })
-                    });
+                    const response = await apiCallWithAuth(
+                        `${API_BASE_URL}/predictions/analyze`,
+                        {
+                            method: 'POST',
+                            body: JSON.stringify({ opportunityId, userBalance: balance, bookmaker })
+                        }
+                    );
 
                     console.log('📡 Response status:', response.status);
 
@@ -1349,7 +1373,7 @@
                 activePredictions, setActivePredictions,
                 selectedOptions, setSelectedOptions,
                 analyzePrediction,
-                fetchUserPredictions, fetchUserCapital, getValidToken,
+                fetchUserPredictions, fetchUserCapital, getValidToken, apiCallWithAuth,
                 loading, setLoading, loadingMessage, setLoadingMessage,
                 notification, showNotification,
                 livePollingActive,
@@ -2138,8 +2162,7 @@
                 console.log('📤 Validating options with stakes:', optionsWithStakes);
                 
                 // Sauvegarder sur Firebase
-                const token = localStorage.getItem('authToken');
-                if (token && currentPrediction?.id) {
+                if (currentPrediction?.id) {
                     try {
                         // Envoyer les données complètes de la prédiction pour le cas où le document n'existe pas
                         const predictionData = {
@@ -2153,17 +2176,16 @@
                             opportunityId: currentPrediction.opportunityId || currentPrediction.matchId
                         };
                         
-                        const response = await fetch(`${API_BASE_URL}/predictions/${currentPrediction.id}/validate`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${token}`
-                            },
-                            body: JSON.stringify({ 
-                                selectedOptions: optionsWithStakes,
-                                predictionData  // Données complètes pour créer le doc si nécessaire
-                            })
-                        });
+                        const response = await apiCallWithAuth(
+                            `${API_BASE_URL}/predictions/${currentPrediction.id}/validate`,
+                            {
+                                method: 'POST',
+                                body: JSON.stringify({ 
+                                    selectedOptions: optionsWithStakes,
+                                    predictionData  // Données complètes pour créer le doc si nécessaire
+                                })
+                            }
+                        );
                         
                         if (response.ok) {
                             console.log('✅ Options validated and saved to Firebase');
@@ -2737,22 +2759,18 @@
         };
 
         const PronosticsPage = () => {
-            const { activePredictions, navigate, user, requireAuth, setCurrentPrediction, currentPrediction, selectedOptions, fetchUserPredictions, showNotification, livePollingActive, API_BASE_URL } = useApp();
+            const { activePredictions, navigate, user, requireAuth, setCurrentPrediction, currentPrediction, selectedOptions, fetchUserPredictions, showNotification, livePollingActive, API_BASE_URL, apiCallWithAuth } = useApp();
 
             // Fonction pour demander le hedging
             const requestHedging = async (prediction) => {
-                const token = localStorage.getItem('authToken');
-                if (!token) return;
-                
                 try {
-                    const response = await fetch(`${API_BASE_URL}/hedging/strategy`, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ predictionId: prediction.id })
-                    });
+                    const response = await apiCallWithAuth(
+                        `${API_BASE_URL}/hedging/strategy`,
+                        {
+                            method: 'POST',
+                            body: JSON.stringify({ predictionId: prediction.id })
+                        }
+                    );
                     
                     if (response.ok) {
                         const data = await response.json();
