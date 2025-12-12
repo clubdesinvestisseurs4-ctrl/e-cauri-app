@@ -567,7 +567,7 @@
         const { useState, useEffect, useContext, createContext, useCallback } = React;
 
         // ============== CONFIGURATION API ==============
-        const API_BASE_URL = 'https://e-cauri-api.onrender.com/api';
+        const API_BASE_URL = 'http://localhost:3001/api';
 
         // ============== SERVICE NOTIFICATIONS NAVIGATEUR ==============
         // DÉSACTIVÉ - L'API Notification n'est pas disponible dans ce contexte
@@ -2141,14 +2141,35 @@
                 const token = localStorage.getItem('authToken');
                 if (token && currentPrediction?.id) {
                     try {
-                        await fetch(`${API_BASE_URL}/predictions/${currentPrediction.id}/validate`, {
+                        // Envoyer les données complètes de la prédiction pour le cas où le document n'existe pas
+                        const predictionData = {
+                            matchInfo: currentPrediction.matchInfo,
+                            userBalance: currentPrediction.userBalance,
+                            bookmaker: currentPrediction.bookmaker,
+                            aiAnalysis: currentPrediction.aiAnalysis,
+                            oddsAnalysis: currentPrediction.oddsAnalysis,
+                            synthesis: currentPrediction.synthesis,
+                            stakes: currentPrediction.stakes,
+                            opportunityId: currentPrediction.opportunityId || currentPrediction.matchId
+                        };
+                        
+                        const response = await fetch(`${API_BASE_URL}/predictions/${currentPrediction.id}/validate`, {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
                                 'Authorization': `Bearer ${token}`
                             },
-                            body: JSON.stringify({ selectedOptions: optionsWithStakes })
+                            body: JSON.stringify({ 
+                                selectedOptions: optionsWithStakes,
+                                predictionData  // Données complètes pour créer le doc si nécessaire
+                            })
                         });
+                        
+                        if (response.ok) {
+                            console.log('✅ Options validated and saved to Firebase');
+                        } else {
+                            console.warn('⚠️ Could not save to Firebase:', await response.text());
+                        }
                     } catch (error) {
                         console.warn('Could not save to Firebase:', error);
                     }
