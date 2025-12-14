@@ -3466,7 +3466,7 @@
         };
 
         const CashoutPage = () => {
-            const { navigate, showNotification, currentPrediction, setCurrentPrediction, selectedOptions: globalSelectedOptions, loading, setLoading, API_BASE_URL, user, goBack, getValidToken, apiCallWithAuth } = useApp();
+            const { navigate, showNotification, currentPrediction, setCurrentPrediction, selectedOptions: globalSelectedOptions, loading, setLoading, API_BASE_URL, user, goBack, getValidToken, apiCallWithAuth, activePredictions, setActivePredictions } = useApp();
             const [cashouts, setCashouts] = useState({});
             const [liveData, setLiveData] = useState({ score: '0 - 0', minute: '0', stats: {} });
             const [matchStatus, setMatchStatus] = useState(null);
@@ -3845,10 +3845,24 @@
                         showNotification("✅ Stratégie calculée!", "success");
                         setHedgingStrategy(data.strategy);
                         // Stocker la stratégie dans currentPrediction pour la page suivante
+                        // ET marquer comme hedgingAnalyzed pour verrouiller
                         if (data.strategy) {
-                            currentPrediction.hedgingStrategy = data.strategy;
-                            currentPrediction.hedgingStrategyGenerated = true;  // Verrouiller
-                            setCurrentPrediction({...currentPrediction, hedgingStrategy: data.strategy, hedgingStrategyGenerated: true});
+                            const updatedPrediction = {
+                                ...currentPrediction, 
+                                hedgingStrategy: data.strategy, 
+                                hedgingStrategyGenerated: true,
+                                hedgingAnalyzed: true,  // VERROUILLAGE
+                                hedgingLiveData: data.liveData || null
+                            };
+                            setCurrentPrediction(updatedPrediction);
+                            
+                            // Mettre à jour aussi dans activePredictions pour la persistance
+                            if (typeof setActivePredictions === 'function' && activePredictions) {
+                                const updatedPreds = activePredictions.map(p => 
+                                    p.id === currentPrediction.id ? updatedPrediction : p
+                                );
+                                setActivePredictions(updatedPreds);
+                            }
                         }
                         navigate('coverage-strategy');
                     } else if (response.status === 401) {
@@ -3946,9 +3960,22 @@ ${summary}`,
                     };
                     
                     setHedgingStrategy(demoStrategy);
-                    currentPrediction.hedgingStrategy = demoStrategy;
-                    currentPrediction.hedgingStrategyGenerated = true;  // Verrouiller
-                    setCurrentPrediction({...currentPrediction, hedgingStrategy: demoStrategy, hedgingStrategyGenerated: true});
+                    // Verrouiller la stratégie
+                    const updatedPrediction = {
+                        ...currentPrediction, 
+                        hedgingStrategy: demoStrategy, 
+                        hedgingStrategyGenerated: true,
+                        hedgingAnalyzed: true  // VERROUILLAGE
+                    };
+                    setCurrentPrediction(updatedPrediction);
+                    
+                    // Mettre à jour aussi dans activePredictions pour la persistance
+                    if (typeof setActivePredictions === 'function' && activePredictions) {
+                        const updatedPreds = activePredictions.map(p => 
+                            p.id === currentPrediction.id ? updatedPrediction : p
+                        );
+                        setActivePredictions(updatedPreds);
+                    }
                     showNotification("✅ Stratégie générée (mode démo)", "success");
                     navigate('coverage-strategy');
                 } finally {
