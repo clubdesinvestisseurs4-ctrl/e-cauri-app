@@ -2908,7 +2908,7 @@
             };
 
             // Filtrer et dédupliquer les prédictions
-            // Afficher: prédictions non terminées (avec ou sans options validées)
+            // Afficher: prédictions non terminées, dédupliquées par match (garder celle avec options validées)
             const activePreds = (() => {
                 const filtered = activePredictions.filter(p => {
                     // Exclure les matchs terminés
@@ -2925,16 +2925,67 @@
                     return true;
                 });
                 
-                // Dédupliquer par ID
-                const seen = new Map();
+                // Dédupliquer par MATCH (pas seulement par ID)
+                // Utiliser fixtureId ou combinaison homeTeam+awayTeam comme clé unique
+                const matchMap = new Map();
+                
                 filtered.forEach(pred => {
-                    const id = pred.id;
-                    if (!seen.has(id)) {
-                        seen.set(id, pred);
+                    // Créer une clé unique pour le match
+                    const homeTeam = pred.matchInfo?.homeTeam || pred.meta?.homeTeam || pred.match?.homeTeam || '';
+                    const awayTeam = pred.matchInfo?.awayTeam || pred.meta?.awayTeam || pred.match?.awayTeam || '';
+                    const fixtureId = pred.matchInfo?.fixtureId || pred.meta?.matchId || pred.opportunityId || '';
+                    
+                    // Clé unique: fixtureId si disponible, sinon homeTeam vs awayTeam
+                    const matchKey = fixtureId ? `fixture_${fixtureId}` : `${homeTeam}_vs_${awayTeam}`.toLowerCase();
+                    
+                    if (!matchMap.has(matchKey)) {
+                        matchMap.set(matchKey, pred);
+                    } else {
+                        const existing = matchMap.get(matchKey);
+                        
+                        // Garder la prédiction la plus avancée:
+                        // 1. Celle avec selectedOptions validées (status: 'active')
+                        // 2. Celle avec le plus d'options sélectionnées
+                        // 3. Celle avec le statut le plus avancé
+                        // 4. La plus récente
+                        
+                        const existingHasOptions = existing.selectedOptions?.length > 0;
+                        const newHasOptions = pred.selectedOptions?.length > 0;
+                        
+                        // Priorité 1: Celle avec options validées
+                        if (newHasOptions && !existingHasOptions) {
+                            matchMap.set(matchKey, pred);
+                        }
+                        // Priorité 2: Si les deux ont des options, garder celle avec plus d'options
+                        else if (newHasOptions && existingHasOptions) {
+                            if (pred.selectedOptions.length > existing.selectedOptions.length) {
+                                matchMap.set(matchKey, pred);
+                            }
+                        }
+                        // Priorité 3: Statut 'active' > 'analyzed' > autres
+                        else if (!newHasOptions && !existingHasOptions) {
+                            const statusPriority = { 'active': 3, 'analyzed': 2, 'analyzing': 1 };
+                            const existingPriority = statusPriority[existing.status] || 0;
+                            const newPriority = statusPriority[pred.status] || 0;
+                            
+                            if (newPriority > existingPriority) {
+                                matchMap.set(matchKey, pred);
+                            }
+                            // Priorité 4: La plus récente (validatedAt ou analyzedAt)
+                            else if (newPriority === existingPriority) {
+                                const existingTime = new Date(existing.validatedAt || existing.analyzedAt || existing.createdAt || 0).getTime();
+                                const newTime = new Date(pred.validatedAt || pred.analyzedAt || pred.createdAt || 0).getTime();
+                                if (newTime > existingTime) {
+                                    matchMap.set(matchKey, pred);
+                                }
+                            }
+                        }
                     }
                 });
                 
-                return Array.from(seen.values());
+                console.log(`📋 Deduplicated: ${filtered.length} → ${matchMap.size} predictions`);
+                
+                return Array.from(matchMap.values());
             })();
 
             // Déterminer si un match est commencé
