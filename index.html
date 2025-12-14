@@ -2070,11 +2070,19 @@
         };
 
         const StrategyPage = () => {
-            const { currentPrediction, selectedMatch, userBalance, selectedOptions, setSelectedOptions, navigate, showNotification, activePredictions, setActivePredictions, API_BASE_URL } = useApp();
+            const { currentPrediction, selectedMatch, userBalance, selectedOptions, setSelectedOptions, navigate, showNotification, activePredictions, setActivePredictions, API_BASE_URL, apiCallWithAuth } = useApp();
 
             // Vérifier si les options ont déjà été validées (mode lecture seule)
             const alreadyValidated = currentPrediction?.selectedOptions && currentPrediction.selectedOptions.length > 0;
             const isReadOnly = alreadyValidated || currentPrediction?.status === 'active' || currentPrediction?.status === 'won' || currentPrediction?.status === 'lost';
+
+            // Charger les options existantes si elles existent
+            useEffect(() => {
+                if (currentPrediction?.selectedOptions?.length > 0 && selectedOptions.length === 0) {
+                    console.log('📋 Loading existing selected options:', currentPrediction.selectedOptions);
+                    setSelectedOptions(currentPrediction.selectedOptions);
+                }
+            }, [currentPrediction?.id]);
 
             // Récupérer les stakes pour fusionner avec les options
             const stakes = currentPrediction?.stakes;
@@ -2759,7 +2767,7 @@
         };
 
         const PronosticsPage = () => {
-            const { activePredictions, navigate, user, requireAuth, setCurrentPrediction, currentPrediction, selectedOptions, fetchUserPredictions, showNotification, livePollingActive, API_BASE_URL, apiCallWithAuth } = useApp();
+            const { activePredictions, navigate, user, requireAuth, setCurrentPrediction, currentPrediction, selectedOptions, setSelectedOptions, fetchUserPredictions, showNotification, livePollingActive, API_BASE_URL, apiCallWithAuth } = useApp();
 
             // Fonction pour demander le hedging
             const requestHedging = async (prediction) => {
@@ -2886,6 +2894,8 @@
             };
 
             const handleViewDetails = (pred) => {
+                // Réinitialiser les options sélectionnées pour charger celles de la prédiction
+                setSelectedOptions([]);
                 setCurrentPrediction(pred);
                 navigate('strategy');
             };
