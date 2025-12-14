@@ -568,7 +568,6 @@
 
         // ============== CONFIGURATION API ==============
         const API_BASE_URL = 'https://e-cauri-api.onrender.com/api';
-        console.log(API_BASE_URL);
 
         // ============== SERVICE NOTIFICATIONS NAVIGATEUR ==============
         // DÉSACTIVÉ - L'API Notification n'est pas disponible dans ce contexte
@@ -2894,6 +2893,12 @@
                 navigate('cashout');
             };
 
+            // Fonction pour calculer le break-even (sortir position)
+            const handleBreakEven = (pred) => {
+                setCurrentPrediction({ ...pred, breakEvenMode: true });
+                navigate('cashout');
+            };
+
             const handleViewDetails = (pred) => {
                 // Réinitialiser les options sélectionnées pour charger celles de la prédiction
                 setSelectedOptions([]);
@@ -3406,20 +3411,34 @@
                                                             <Icons.Eye />
                                                             Détails
                                                         </button>
-                                                        <button 
-                                                            className={`btn ${matchStarted ? 'btn-primary' : 'btn-secondary'}`}
-                                                            style={{ 
-                                                                flex: 1,
-                                                                opacity: matchStarted ? 1 : 0.6,
-                                                                cursor: matchStarted ? 'pointer' : 'not-allowed'
-                                                            }}
-                                                            onClick={() => handleHedging(pred)}
-                                                            disabled={!matchStarted}
-                                                            title={matchStarted ? 'Ouvrir la stratégie de couverture' : 'Disponible après le coup d\'envoi'}
-                                                        >
-                                                            {matchStarted ? <Icons.Shield /> : <Icons.Lock />}
-                                                            {matchStarted ? 'Couverture' : 'En attente'}
-                                                        </button>
+                                                        
+                                                        {/* Afficher "Couverture" si pas encore analysé, "Sortir position" sinon */}
+                                                        {pred.hedgingAnalyzed ? (
+                                                            <button 
+                                                                className="btn btn-primary"
+                                                                style={{ flex: 1, background: 'linear-gradient(135deg, var(--accent-gold) 0%, #f59e0b 100%)' }}
+                                                                onClick={() => handleBreakEven(pred)}
+                                                                title="Calculer les mises de couverture pour sortir à zéro"
+                                                            >
+                                                                <Icons.DollarSign />
+                                                                Sortir position
+                                                            </button>
+                                                        ) : (
+                                                            <button 
+                                                                className={`btn ${matchStarted ? 'btn-primary' : 'btn-secondary'}`}
+                                                                style={{ 
+                                                                    flex: 1,
+                                                                    opacity: matchStarted ? 1 : 0.6,
+                                                                    cursor: matchStarted ? 'pointer' : 'not-allowed'
+                                                                }}
+                                                                onClick={() => handleHedging(pred)}
+                                                                disabled={!matchStarted}
+                                                                title={matchStarted ? 'Analyser la stratégie de couverture' : 'Disponible après le coup d\'envoi'}
+                                                            >
+                                                                {matchStarted ? <Icons.Shield /> : <Icons.Lock />}
+                                                                {matchStarted ? 'Couverture' : 'En attente'}
+                                                            </button>
+                                                        )}
                                                     </div>
                                                 </>
                                             )}
@@ -3447,7 +3466,7 @@
         };
 
         const CashoutPage = () => {
-            const { navigate, showNotification, currentPrediction, setCurrentPrediction, selectedOptions: globalSelectedOptions, loading, setLoading, API_BASE_URL, user, goBack, getValidToken } = useApp();
+            const { navigate, showNotification, currentPrediction, setCurrentPrediction, selectedOptions: globalSelectedOptions, loading, setLoading, API_BASE_URL, user, goBack, getValidToken, apiCallWithAuth } = useApp();
             const [cashouts, setCashouts] = useState({});
             const [liveData, setLiveData] = useState({ score: '0 - 0', minute: '0', stats: {} });
             const [matchStatus, setMatchStatus] = useState(null);
@@ -3460,11 +3479,62 @@
             const [hedgingStrategy, setHedgingStrategy] = useState(null);
             const [calculatingStrategy, setCalculatingStrategy] = useState(false);
             const [liveOdds, setLiveOdds] = useState({});
-            const [breakEvenMode, setBreakEvenMode] = useState(false);
+            const [breakEvenMode, setBreakEvenMode] = useState(currentPrediction?.breakEvenMode || false);
             const [breakEvenBets, setBreakEvenBets] = useState([]);
+            const [breakEvenSummary, setBreakEvenSummary] = useState(null);
+            const [loadingBreakEven, setLoadingBreakEven] = useState(false);
 
             // Vérifier si une stratégie a déjà été générée
-            const hasExistingStrategy = currentPrediction?.hedgingStrategy || currentPrediction?.hedgingStrategyGenerated;
+            const hasExistingStrategy = currentPrediction?.hedgingStrategy || currentPrediction?.hedgingStrategyGenerated || currentPrediction?.hedgingAnalyzed;
+
+            // ========== FONCTION POUR CALCULER BREAK-EVEN ==========
+            const fetchBreakEven = async () => {
+                if (!currentPrediction?.id) return;
+                
+                setLoadingBreakEven(true);
+                try {
+                    const response = await apiCallWithAuth(
+                        `${API_BASE_URL}/hedging/break-even`,
+                        {
+                            method: 'POST',
+                            body: JSON.stringify({ predictionId: currentPrediction.id })
+                        }
+                    );
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        setBreakEvenBets(data.breakEvenBets || []);
+                        setBreakEvenSummary(data.summary || null);
+                        setLiveOdds(data.liveOdds || {});
+                        
+                        if (data.matchStatus) {
+                            setLiveData({
+                                score: `${data.matchStatus.score?.home ?? 0} - ${data.matchStatus.score?.away ?? 0}`,
+                                minute: data.matchStatus.elapsed || '0',
+                                status: data.matchStatus.status
+                            });
+                        }
+                        
+                        showNotification("✅ Calcul break-even terminé", "success");
+                    } else {
+                        const error = await response.json();
+                        showNotification(error.error || "Erreur lors du calcul", "error");
+                    }
+                } catch (error) {
+                    console.error("Break-even error:", error);
+                    showNotification("Erreur lors du calcul du break-even", "error");
+                } finally {
+                    setLoadingBreakEven(false);
+                }
+            };
+
+            // Charger automatiquement le break-even si on est en mode break-even
+            useEffect(() => {
+                if (currentPrediction?.breakEvenMode && !breakEvenBets.length) {
+                    setBreakEvenMode(true);
+                    fetchBreakEven();
+                }
+            }, [currentPrediction?.breakEvenMode]);
 
             // Récupérer les options validées depuis PLUSIEURS sources possibles
             const getValidatedOptions = () => {
@@ -4052,22 +4122,32 @@ ${summary}`,
                                             border: breakEvenMode ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid rgba(245, 158, 11, 0.5)'
                                         }}
                                         onClick={() => {
-                                            setBreakEvenMode(!breakEvenMode);
                                             if (!breakEvenMode) {
-                                                // Calculer le break-even avec les cotes actuelles
-                                                calculateBreakEven(liveOdds);
+                                                setBreakEvenMode(true);
+                                                // Récupérer automatiquement les cotes live depuis l'API
+                                                fetchBreakEven();
+                                            } else {
+                                                setBreakEvenMode(false);
+                                                setBreakEvenBets([]);
                                             }
                                         }}
+                                        disabled={loadingBreakEven}
                                     >
-                                        <Icons.Calculator />
-                                        {breakEvenMode ? '❌ Fermer le mode Break-Even' : '🎯 Sortir des options (Break-Even)'}
+                                        {loadingBreakEven ? (
+                                            <>🔄 Calcul en cours...</>
+                                        ) : (
+                                            <>
+                                                <Icons.Calculator />
+                                                {breakEvenMode ? '❌ Fermer le mode Break-Even' : '🎯 Sortir des options (Break-Even)'}
+                                            </>
+                                        )}
                                     </button>
                                 </div>
 
                                 {/* ========== MODE BREAK-EVEN ========== */}
                                 {breakEvenMode && (
                                     <div className="card animate-fade-in" style={{ marginTop: '16px' }}>
-                                        <h4 style={{ marginBottom: '16px', color: 'var(--accent-red)' }}>
+                                        <h4 style={{ marginBottom: '16px', color: 'var(--accent-gold)' }}>
                                             🎯 Calcul Break-Even (Sortir à 0)
                                         </h4>
                                         
@@ -4088,78 +4168,63 @@ ${summary}`,
                                             </p>
                                         </div>
 
-                                        {/* Input pour les cotes live */}
-                                        <div style={{ marginBottom: '16px' }}>
-                                            <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-                                                📊 Entrez les cotes LIVE actuelles pour le calcul:
-                                            </label>
-                                            
-                                            {options.map((opt, i) => (
-                                                <div key={i} style={{ 
-                                                    display: 'grid', 
-                                                    gridTemplateColumns: '1fr 100px', 
-                                                    gap: '8px', 
-                                                    marginBottom: '8px',
-                                                    alignItems: 'center'
-                                                }}>
-                                                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                                                        Cote opposée à "{opt.option.substring(0, 25)}..."
-                                                    </span>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        className="input"
-                                                        style={{ padding: '8px', fontSize: '0.9rem' }}
-                                                        placeholder="Ex: 2.10"
-                                                        value={liveOdds[`opposite_${i}`] || ''}
-                                                        onChange={(e) => {
-                                                            const newOdds = {...liveOdds, [`opposite_${i}`]: parseFloat(e.target.value) || 0};
-                                                            setLiveOdds(newOdds);
-                                                        }}
-                                                    />
+                                        {/* Bouton pour récupérer les cotes live */}
+                                        <button
+                                            className="btn btn-primary"
+                                            style={{ width: '100%', marginBottom: '16px' }}
+                                            onClick={fetchBreakEven}
+                                            disabled={loadingBreakEven}
+                                        >
+                                            {loadingBreakEven ? '🔄 Récupération des cotes live...' : '📡 Récupérer les cotes LIVE'}
+                                        </button>
+
+                                        {/* Résumé si disponible */}
+                                        {breakEvenSummary && (
+                                            <div style={{
+                                                background: 'rgba(16, 185, 129, 0.1)',
+                                                border: '1px solid rgba(16, 185, 129, 0.3)',
+                                                borderRadius: '8px',
+                                                padding: '12px',
+                                                marginBottom: '16px'
+                                            }}>
+                                                <h5 style={{ marginBottom: '8px', color: 'var(--accent-green)' }}>📊 Résumé</h5>
+                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '0.85rem' }}>
+                                                    <div>
+                                                        <span style={{ color: 'var(--text-muted)' }}>Total investi:</span>
+                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                                                            {breakEvenSummary.totalInvested?.toLocaleString()} FCFA
+                                                        </span>
+                                                    </div>
+                                                    <div>
+                                                        <span style={{ color: 'var(--text-muted)' }}>Couverture requise:</span>
+                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: 'var(--accent-gold)' }}>
+                                                            {breakEvenSummary.totalHedgeRequired?.toLocaleString()} FCFA
+                                                        </span>
+                                                    </div>
+                                                    <div>
+                                                        <span style={{ color: 'var(--text-muted)' }}>Pire scénario:</span>
+                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: breakEvenSummary.worstCaseWithHedge >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                                                            {breakEvenSummary.worstCaseWithHedge >= 0 ? '+' : ''}{breakEvenSummary.worstCaseWithHedge?.toLocaleString()} FCFA
+                                                        </span>
+                                                    </div>
+                                                    <div>
+                                                        <span style={{ color: 'var(--text-muted)' }}>Meilleur scénario:</span>
+                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: 'var(--accent-green)' }}>
+                                                            +{breakEvenSummary.bestCaseWithHedge?.toLocaleString()} FCFA
+                                                        </span>
+                                                    </div>
                                                 </div>
-                                            ))}
-                                            
-                                            <button
-                                                className="btn btn-secondary"
-                                                style={{ width: '100%', marginTop: '8px' }}
-                                                onClick={() => {
-                                                    // Recalculer avec les nouvelles cotes
-                                                    const bets = options.map((opt, i) => {
-                                                        const stake = opt.stake || 0;
-                                                        const originalOdds = opt.odds || 1.5;
-                                                        const potentialReturn = stake * originalOdds;
-                                                        const oppositeOdds = liveOdds[`opposite_${i}`] || 2.0;
-                                                        
-                                                        // Formule: Mise hedge = Gain potentiel / Cote opposée
-                                                        const hedgeStake = Math.ceil(potentialReturn / oppositeOdds);
-                                                        
-                                                        // Scénarios
-                                                        const scenarioOriginalWins = potentialReturn - stake - hedgeStake;
-                                                        const scenarioHedgeWins = (hedgeStake * oppositeOdds) - stake - hedgeStake;
-                                                        
-                                                        return {
-                                                            originalOption: opt.option,
-                                                            originalStake: stake,
-                                                            originalOdds,
-                                                            potentialReturn,
-                                                            oppositeOdds,
-                                                            hedgeStake,
-                                                            scenarioOriginalWins: Math.round(scenarioOriginalWins),
-                                                            scenarioHedgeWins: Math.round(scenarioHedgeWins)
-                                                        };
-                                                    });
-                                                    setBreakEvenBets(bets);
-                                                    showNotification("✅ Calculs mis à jour", "success");
-                                                }}
-                                            >
-                                                🔄 Recalculer
-                                            </button>
-                                        </div>
+                                                {!breakEvenSummary.liveOddsAvailable && (
+                                                    <p style={{ color: 'var(--accent-gold)', fontSize: '0.75rem', marginTop: '8px' }}>
+                                                        ⚠️ Cotes live non disponibles - Utilisation de cotes estimées
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
 
                                         {/* Résultats du calcul */}
                                         {breakEvenBets.length > 0 && (
-                                            <div style={{ marginTop: '16px' }}>
+                                            <div>
                                                 <h5 style={{ marginBottom: '12px', color: 'var(--text-primary)' }}>
                                                     📋 Mises de couverture à placer:
                                                 </h5>
@@ -4169,114 +4234,86 @@ ${summary}`,
                                                         background: 'rgba(0,0,0,0.2)',
                                                         borderRadius: '8px',
                                                         padding: '12px',
-                                                        marginBottom: '12px'
+                                                        marginBottom: '12px',
+                                                        border: bet.error ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(255,255,255,0.1)'
                                                     }}>
-                                                        <div style={{ marginBottom: '8px' }}>
-                                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Option initiale:</span>
-                                                            <div style={{ fontWeight: '500' }}>{bet.originalOption}</div>
-                                                            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                                                Mise: {bet.originalStake?.toLocaleString()} F @ {bet.originalOdds?.toFixed(2)}
+                                                        {/* Option originale */}
+                                                        <div style={{ marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
+                                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Votre pari:</span>
+                                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                                <span style={{ fontWeight: '500' }}>{bet.originalOption}</span>
+                                                                <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-blue)' }}>
+                                                                    {bet.originalStake?.toLocaleString()} FCFA @{bet.originalOdds?.toFixed(2)}
+                                                                </span>
                                                             </div>
                                                         </div>
                                                         
-                                                        <div style={{ 
-                                                            background: 'rgba(239, 68, 68, 0.1)', 
-                                                            padding: '10px', 
-                                                            borderRadius: '6px',
-                                                            marginTop: '8px'
-                                                        }}>
-                                                            <div style={{ color: 'var(--accent-red)', fontWeight: '600', marginBottom: '4px' }}>
-                                                                ➡️ PARIER SUR L'OPPOSÉ:
+                                                        {bet.error ? (
+                                                            <div style={{ color: 'var(--accent-red)', fontSize: '0.85rem' }}>
+                                                                ❌ {bet.error}
                                                             </div>
-                                                            <div style={{ 
-                                                                fontFamily: 'Space Mono', 
-                                                                fontSize: '1.2rem', 
-                                                                color: 'var(--accent-gold)',
-                                                                marginBottom: '4px'
-                                                            }}>
-                                                                {bet.hedgeStake?.toLocaleString()} FCFA @ {bet.oppositeOdds?.toFixed(2)}
-                                                            </div>
-                                                        </div>
-                                                        
-                                                        <div style={{ 
-                                                            display: 'grid', 
-                                                            gridTemplateColumns: '1fr 1fr', 
-                                                            gap: '8px',
-                                                            marginTop: '8px',
-                                                            fontSize: '0.75rem'
-                                                        }}>
-                                                            <div style={{ 
-                                                                padding: '6px', 
-                                                                background: 'rgba(16, 185, 129, 0.1)', 
-                                                                borderRadius: '4px',
-                                                                textAlign: 'center'
-                                                            }}>
-                                                                <div style={{ color: 'var(--text-muted)' }}>Si pari initial gagne:</div>
+                                                        ) : (
+                                                            <>
+                                                                {/* Pari de couverture */}
                                                                 <div style={{ 
-                                                                    color: bet.scenarioOriginalWins >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
-                                                                    fontFamily: 'Space Mono'
+                                                                    background: 'rgba(245, 158, 11, 0.1)',
+                                                                    borderRadius: '6px',
+                                                                    padding: '10px',
+                                                                    marginBottom: '8px'
                                                                 }}>
-                                                                    {bet.scenarioOriginalWins >= 0 ? '+' : ''}{bet.scenarioOriginalWins?.toLocaleString()} F
+                                                                    <span style={{ color: 'var(--accent-gold)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>
+                                                                        ➡️ Parier sur: {bet.oppositeBet}
+                                                                    </span>
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                                        <span style={{ color: 'var(--text-secondary)' }}>Cote live:</span>
+                                                                        <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-gold)' }}>
+                                                                            @{bet.oppositeOdds?.toFixed(2)}
+                                                                        </span>
+                                                                    </div>
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
+                                                                        <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Mise à placer:</span>
+                                                                        <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-green)', fontWeight: '700', fontSize: '1.1rem' }}>
+                                                                            {bet.hedgeStake?.toLocaleString()} FCFA
+                                                                        </span>
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-                                                            <div style={{ 
-                                                                padding: '6px', 
-                                                                background: 'rgba(59, 130, 246, 0.1)', 
-                                                                borderRadius: '4px',
-                                                                textAlign: 'center'
-                                                            }}>
-                                                                <div style={{ color: 'var(--text-muted)' }}>Si pari hedge gagne:</div>
-                                                                <div style={{ 
-                                                                    color: bet.scenarioHedgeWins >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
-                                                                    fontFamily: 'Space Mono'
-                                                                }}>
-                                                                    {bet.scenarioHedgeWins >= 0 ? '+' : ''}{bet.scenarioHedgeWins?.toLocaleString()} F
+                                                                
+                                                                {/* Scénarios */}
+                                                                <div style={{ fontSize: '0.8rem' }}>
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)' }}>
+                                                                        <span>Si pari initial gagne:</span>
+                                                                        <span style={{ color: bet.scenarios?.originalWins >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                                                                            {bet.scenarios?.originalWins >= 0 ? '+' : ''}{bet.scenarios?.originalWins?.toLocaleString()} FCFA
+                                                                        </span>
+                                                                    </div>
+                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)' }}>
+                                                                        <span>Si couverture gagne:</span>
+                                                                        <span style={{ color: bet.scenarios?.hedgeWins >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
+                                                                            {bet.scenarios?.hedgeWins >= 0 ? '+' : ''}{bet.scenarios?.hedgeWins?.toLocaleString()} FCFA
+                                                                        </span>
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-                                                        </div>
+                                                            </>
+                                                        )}
                                                     </div>
                                                 ))}
                                                 
-                                                {/* Résumé total */}
-                                                <div style={{
-                                                    background: 'rgba(139, 92, 246, 0.1)',
-                                                    border: '1px solid rgba(139, 92, 246, 0.3)',
-                                                    borderRadius: '8px',
-                                                    padding: '12px',
-                                                    marginTop: '16px'
-                                                }}>
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                                                        <span style={{ color: 'var(--text-secondary)' }}>Total mises initiales:</span>
-                                                        <span style={{ fontFamily: 'Space Mono' }}>
-                                                            {breakEvenBets.reduce((s, b) => s + (b.originalStake || 0), 0).toLocaleString()} F
-                                                        </span>
-                                                    </div>
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                                                        <span style={{ color: 'var(--text-secondary)' }}>Total mises hedge:</span>
-                                                        <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-gold)' }}>
-                                                            {breakEvenBets.reduce((s, b) => s + (b.hedgeStake || 0), 0).toLocaleString()} F
-                                                        </span>
-                                                    </div>
-                                                    <div style={{ 
-                                                        borderTop: '1px solid var(--border-color)', 
-                                                        paddingTop: '8px',
-                                                        display: 'flex', 
-                                                        justifyContent: 'space-between',
-                                                        fontWeight: '600'
-                                                    }}>
-                                                        <span>Résultat garanti (environ):</span>
-                                                        <span style={{ color: 'var(--accent-green)' }}>≈ 0 F</span>
-                                                    </div>
-                                                </div>
-                                                
-                                                <p style={{ 
-                                                    fontSize: '0.75rem', 
-                                                    color: 'var(--text-muted)', 
-                                                    marginTop: '12px',
-                                                    textAlign: 'center'
-                                                }}>
-                                                    ⚠️ Les calculs sont approximatifs. Vérifiez les cotes live sur votre bookmaker avant de parier.
-                                                </p>
+                                                {/* Bouton pour actualiser */}
+                                                <button
+                                                    className="btn btn-secondary"
+                                                    style={{ width: '100%', marginTop: '8px' }}
+                                                    onClick={fetchBreakEven}
+                                                    disabled={loadingBreakEven}
+                                                >
+                                                    🔄 Actualiser les cotes
+                                                </button>
+                                            </div>
+                                        )}
+
+                                        {/* Message si pas de résultats */}
+                                        {breakEvenBets.length === 0 && !loadingBreakEven && (
+                                            <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
+                                                <p>Cliquez sur "Récupérer les cotes LIVE" pour calculer les mises de couverture</p>
                                             </div>
                                         )}
                                     </div>
