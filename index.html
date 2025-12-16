@@ -4851,161 +4851,172 @@ ${summary}`,
         };
 
         const CapitalPage = () => {
-            const { user, requireAuth, navigate, API_BASE_URL, showNotification } = useApp();
+            const { user, requireAuth, navigate, API_BASE_URL, showNotification, apiCallWithAuth } = useApp();
             const [stats, setStats] = useState(null);
             const [history, setHistory] = useState([]);
             const [loading, setLoading] = useState(true);
-            const [adjustmentModal, setAdjustmentModal] = useState(false);
-            const [adjustmentData, setAdjustmentData] = useState({ amount: '', reason: '', type: 'deposit' });
-            const [recalculating, setRecalculating] = useState(false);
+            const [showAddModal, setShowAddModal] = useState(false);
+            const [newEntry, setNewEntry] = useState({ newBalance: '', motif: 'Dépôt', description: '' });
+            const [lastBalance, setLastBalance] = useState(null);
 
-            // Fonction pour recalculer toutes les prédictions
-            const handleRecalculateAll = async () => {
-                if (!user) {
-                    showNotification("Connectez-vous pour recalculer", "error");
-                    return;
-                }
-
-                setRecalculating(true);
-                try {
-                    const token = localStorage.getItem('authToken');
-                    const response = await fetch(`${API_BASE_URL}/user/capital/recalculate-all`, {
-                        method: 'POST',
-                        headers: { 
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                        }
-                    });
-
-                    const data = await response.json();
-
-                    if (response.ok && data.success) {
-                        showNotification(data.message || "Recalcul terminé!", "success");
-                        
-                        // Mettre à jour les stats localement
-                        if (data.stats) {
-                            setStats(prev => ({
-                                ...prev,
-                                currentBalance: data.stats.newBalance,
-                                totalGains: data.stats.totalGains,
-                                totalLosses: data.stats.totalLosses,
-                                netProfit: data.stats.netProfit,
-                                wonBets: data.stats.wonBets,
-                                lostBets: data.stats.lostBets,
-                                winRate: data.stats.winRate,
-                                totalBets: data.stats.wonBets + data.stats.lostBets
-                            }));
-                        }
-
-                        // Recharger les stats complètes
-                        setTimeout(() => {
-                            window.location.reload();
-                        }, 1500);
-                    } else {
-                        showNotification(data.error || "Erreur lors du recalcul", "error");
-                    }
-                } catch (error) {
-                    console.error("Recalculate error:", error);
-                    showNotification("Erreur de connexion", "error");
-                } finally {
-                    setRecalculating(false);
-                }
-            };
-
-            // Charger les statistiques
+            // Charger les données
             useEffect(() => {
-                const fetchStats = async () => {
-                    if (!user) {
-                        // Mode démo
-                        setStats({
-                            currentBalance: 50000,
-                            totalGains: 15000,
-                            totalLosses: 8000,
-                            netProfit: 7000,
-                            winRate: 62.5,
-                            totalBets: 24,
-                            roi: 14,
-                            averageBet: 2000
-                        });
-                        setLoading(false);
-                        return;
-                    }
-
-                    try {
-                        const token = localStorage.getItem('authToken');
-                        const response = await fetch(`${API_BASE_URL}/user/capital/stats`, {
-                            headers: { 'Authorization': `Bearer ${token}` }
-                        });
-
-                        if (response.ok) {
-                            const data = await response.json();
-                            setStats(data.stats);
-                            setHistory(data.history || []);
+                if (user) {
+                    fetchData();
+                } else {
+                    // Mode démo
+                    setStats({
+                        currentBalance: 51000,
+                        totalGains: 2000,
+                        totalLosses: 1000,
+                        netProfit: 1000,
+                        totalDeposits: 10000,
+                        totalWithdrawals: 0,
+                        entriesCount: 3
+                    });
+                    setHistory([
+                        {
+                            id: 'demo_1',
+                            oldBalance: 40000,
+                            newBalance: 50000,
+                            difference: 10000,
+                            motif: 'Dépôt',
+                            description: 'Dépôt initial',
+                            timestamp: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+                        },
+                        {
+                            id: 'demo_2',
+                            oldBalance: 50000,
+                            newBalance: 52000,
+                            difference: 2000,
+                            motif: 'Bénéfice',
+                            description: 'Gain sur pari',
+                            timestamp: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000)
+                        },
+                        {
+                            id: 'demo_3',
+                            oldBalance: 52000,
+                            newBalance: 51000,
+                            difference: -1000,
+                            motif: 'Perte',
+                            description: 'Perte sur pari',
+                            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
                         }
-                    } catch (error) {
-                        console.warn("Could not fetch capital stats:", error);
-                        // Mode démo fallback
-                        setStats({
-                            currentBalance: 50000,
-                            totalGains: 15000,
-                            totalLosses: 8000,
-                            netProfit: 7000,
-                            winRate: 62.5,
-                            totalBets: 24,
-                            roi: 14,
-                            averageBet: 2000
-                        });
-                    } finally {
-                        setLoading(false);
-                    }
-                };
-
-                fetchStats();
+                    ]);
+                    setLastBalance({ balance: 51000 });
+                    setLoading(false);
+                }
             }, [user]);
 
-            const handleAdjustment = async () => {
-                if (!adjustmentData.amount || !adjustmentData.reason) {
-                    showNotification("Veuillez remplir tous les champs", "error");
+            const fetchData = async () => {
+                try {
+                    setLoading(true);
+                    
+                    // Récupérer les statistiques
+                    const statsRes = await apiCallWithAuth(`${API_BASE_URL}/balance-entries/stats`);
+                    if (statsRes.ok) {
+                        const statsData = await statsRes.json();
+                        setStats(statsData.stats);
+                    }
+
+                    // Récupérer l'historique
+                    const historyRes = await apiCallWithAuth(`${API_BASE_URL}/balance-entries/history?limit=50`);
+                    if (historyRes.ok) {
+                        const historyData = await historyRes.json();
+                        setHistory(historyData.entries);
+                    }
+
+                    // Récupérer le dernier solde
+                    const lastRes = await apiCallWithAuth(`${API_BASE_URL}/balance-entries/last`);
+                    if (lastRes.ok) {
+                        const lastData = await lastRes.json();
+                        setLastBalance(lastData.lastBalance);
+                    }
+
+                } catch (error) {
+                    console.error("Error fetching capital data:", error);
+                    showNotification("Erreur lors du chargement des données", "error");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleAddEntry = async () => {
+                if (!newEntry.newBalance || !newEntry.motif) {
+                    showNotification("Veuillez remplir tous les champs requis", "error");
                     return;
                 }
 
                 try {
-                    const token = localStorage.getItem('authToken');
-                    const amount = adjustmentData.type === 'withdrawal' 
-                        ? -Math.abs(parseFloat(adjustmentData.amount))
-                        : Math.abs(parseFloat(adjustmentData.amount));
-
-                    const response = await fetch(`${API_BASE_URL}/user/capital/adjust`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${token}`
-                        },
-                        body: JSON.stringify({
-                            amount,
-                            reason: adjustmentData.reason,
-                            type: adjustmentData.type
-                        })
-                    });
-
-                    const data = await response.json();
+                    const response = await apiCallWithAuth(
+                        `${API_BASE_URL}/balance-entries/add`,
+                        {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                newBalance: parseFloat(newEntry.newBalance),
+                                motif: newEntry.motif,
+                                description: newEntry.description
+                            })
+                        }
+                    );
 
                     if (response.ok) {
-                        showNotification(`Solde mis à jour: ${data.newBalance.toLocaleString()} FCFA`, "success");
-                        setStats(prev => ({ ...prev, currentBalance: data.newBalance }));
-                        setAdjustmentModal(false);
-                        setAdjustmentData({ amount: '', reason: '', type: 'deposit' });
+                        const data = await response.json();
+                        showNotification(`✅ Solde mis à jour: ${data.entry.newBalance.toLocaleString()} FCFA`, "success");
+                        setShowAddModal(false);
+                        setNewEntry({ newBalance: '', motif: 'Dépôt', description: '' });
+                        fetchData(); // Recharger les données
                     } else {
-                        throw new Error(data.error);
+                        const error = await response.json();
+                        showNotification(error.error || "Erreur lors de l'ajout", "error");
                     }
                 } catch (error) {
-                    showNotification(`Erreur: ${error.message}`, "error");
+                    console.error("Error adding entry:", error);
+                    showNotification("Erreur de connexion", "error");
                 }
             };
 
-            // Modal d'ajustement
-            const AdjustmentModal = () => {
-                if (!adjustmentModal) return null;
+            const formatDate = (timestamp) => {
+                if (!timestamp) return 'N/A';
+                const date = new Date(timestamp);
+                const now = new Date();
+                const diffMs = now - date;
+                const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                
+                if (diffDays === 0) return "Aujourd'hui";
+                if (diffDays === 1) return "Hier";
+                if (diffDays < 7) return `Il y a ${diffDays}j`;
+                
+                return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+            };
+
+            const getMotifIcon = (motif) => {
+                switch(motif) {
+                    case 'Dépôt': return '📥';
+                    case 'Retrait': return '📤';
+                    case 'Bénéfice': return '💰';
+                    case 'Perte': return '📉';
+                    default: return '💵';
+                }
+            };
+
+            const getMotifColor = (motif) => {
+                switch(motif) {
+                    case 'Dépôt': return 'var(--accent-blue)';
+                    case 'Retrait': return 'var(--accent-gold)';
+                    case 'Bénéfice': return 'var(--accent-green)';
+                    case 'Perte': return 'var(--accent-red)';
+                    default: return 'var(--text-primary)';
+                }
+            };
+
+            // Modal d'ajout
+            const AddModal = () => {
+                if (!showAddModal) return null;
+
+                const predictedDifference = newEntry.newBalance && lastBalance 
+                    ? parseFloat(newEntry.newBalance) - lastBalance.balance
+                    : 0;
 
                 return (
                     <div style={{
@@ -5014,59 +5025,98 @@ ${summary}`,
                         left: 0,
                         right: 0,
                         bottom: 0,
-                        background: 'rgba(0,0,0,0.8)',
+                        background: 'rgba(0,0,0,0.85)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         zIndex: 2000,
                         padding: '20px'
-                    }} onClick={(e) => e.target === e.currentTarget && setAdjustmentModal(false)}>
-                        <div className="card" style={{ width: '100%', maxWidth: '400px' }}>
-                            <h3 style={{ marginBottom: '16px', color: 'var(--accent-gold)' }}>💰 Ajuster le capital</h3>
-                            
-                            <div style={{ marginBottom: '16px' }}>
-                                <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>Type</label>
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <button
-                                        className={`btn ${adjustmentData.type === 'deposit' ? 'btn-success' : 'btn-secondary'}`}
-                                        style={{ flex: 1 }}
-                                        onClick={() => setAdjustmentData(prev => ({ ...prev, type: 'deposit' }))}
-                                    >📥 Dépôt</button>
-                                    <button
-                                        className={`btn ${adjustmentData.type === 'withdrawal' ? 'btn-danger' : 'btn-secondary'}`}
-                                        style={{ flex: 1 }}
-                                        onClick={() => setAdjustmentData(prev => ({ ...prev, type: 'withdrawal' }))}
-                                    >📤 Retrait</button>
-                                </div>
-                            </div>
+                    }} onClick={(e) => e.target === e.currentTarget && setShowAddModal(false)}>
+                        <div className="card animate-fade-in" style={{ width: '100%', maxWidth: '420px' }}>
+                            <h3 style={{ marginBottom: '8px', color: 'var(--accent-gold)' }}>💰 Ajouter un solde</h3>
+                            <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '20px' }}>
+                                Dernier solde: <strong style={{ color: 'var(--accent-gold)' }}>{(lastBalance?.balance || 0).toLocaleString()} FCFA</strong>
+                            </p>
 
+                            {/* Montant */}
                             <div style={{ marginBottom: '16px' }}>
-                                <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>Montant (FCFA)</label>
+                                <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                    Nouveau solde (FCFA) <span style={{ color: 'var(--accent-red)' }}>*</span>
+                                </label>
                                 <input
                                     type="number"
                                     className="input"
-                                    placeholder="Ex: 10000"
-                                    value={adjustmentData.amount}
-                                    onChange={(e) => setAdjustmentData(prev => ({ ...prev, amount: e.target.value }))}
-                                    style={{ width: '100%' }}
+                                    placeholder="Ex: 55000"
+                                    value={newEntry.newBalance}
+                                    onChange={(e) => setNewEntry(prev => ({ ...prev, newBalance: e.target.value }))}
+                                    style={{ width: '100%', fontSize: '1.1rem', fontWeight: '600' }}
                                 />
+                                {predictedDifference !== 0 && newEntry.newBalance && (
+                                    <div style={{ 
+                                        marginTop: '6px', 
+                                        padding: '8px 12px',
+                                        background: predictedDifference > 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                                        borderRadius: '6px',
+                                        fontSize: '0.85rem',
+                                        color: predictedDifference > 0 ? 'var(--accent-green)' : 'var(--accent-red)'
+                                    }}>
+                                        Différence: {predictedDifference > 0 ? '+' : ''}{predictedDifference.toLocaleString()} FCFA
+                                    </div>
+                                )}
                             </div>
 
+                            {/* Motif */}
+                            <div style={{ marginBottom: '16px' }}>
+                                <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                    Motif <span style={{ color: 'var(--accent-red)' }}>*</span>
+                                </label>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                    <button
+                                        className={`btn ${newEntry.motif === 'Dépôt' ? 'btn-primary' : 'btn-secondary'}`}
+                                        onClick={() => setNewEntry(prev => ({ ...prev, motif: 'Dépôt' }))}
+                                    >📥 Dépôt</button>
+                                    <button
+                                        className={`btn ${newEntry.motif === 'Retrait' ? 'btn-primary' : 'btn-secondary'}`}
+                                        onClick={() => setNewEntry(prev => ({ ...prev, motif: 'Retrait' }))}
+                                    >📤 Retrait</button>
+                                    <button
+                                        className={`btn ${newEntry.motif === 'Bénéfice' ? 'btn-primary' : 'btn-secondary'}`}
+                                        onClick={() => setNewEntry(prev => ({ ...prev, motif: 'Bénéfice' }))}
+                                    >💰 Bénéfice</button>
+                                    <button
+                                        className={`btn ${newEntry.motif === 'Perte' ? 'btn-primary' : 'btn-secondary'}`}
+                                        onClick={() => setNewEntry(prev => ({ ...prev, motif: 'Perte' }))}
+                                    >📉 Perte</button>
+                                </div>
+                            </div>
+
+                            {/* Description */}
                             <div style={{ marginBottom: '20px' }}>
-                                <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)' }}>Raison</label>
+                                <label style={{ display: 'block', marginBottom: '8px', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                    Description (optionnelle)
+                                </label>
                                 <input
                                     type="text"
                                     className="input"
-                                    placeholder="Ex: Recharge via MoMo"
-                                    value={adjustmentData.reason}
-                                    onChange={(e) => setAdjustmentData(prev => ({ ...prev, reason: e.target.value }))}
+                                    placeholder="Ex: Dépôt via Mobile Money"
+                                    value={newEntry.description}
+                                    onChange={(e) => setNewEntry(prev => ({ ...prev, description: e.target.value }))}
                                     style={{ width: '100%' }}
                                 />
                             </div>
 
                             <div style={{ display: 'flex', gap: '12px' }}>
-                                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setAdjustmentModal(false)}>Annuler</button>
-                                <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleAdjustment}>Confirmer</button>
+                                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowAddModal(false)}>
+                                    Annuler
+                                </button>
+                                <button 
+                                    className="btn btn-primary" 
+                                    style={{ flex: 1 }} 
+                                    onClick={handleAddEntry}
+                                    disabled={!newEntry.newBalance || !newEntry.motif}
+                                >
+                                    Confirmer
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -5075,7 +5125,7 @@ ${summary}`,
 
             return (
                 <>
-                    <Header showBack={false} title="Suivi Capital" />
+                    <Header showBack={false} title="Suivi du capital" />
                     <main className="main-content">
                         {loading ? (
                             <div style={{ 
@@ -5086,7 +5136,6 @@ ${summary}`,
                                 padding: '60px 20px',
                                 minHeight: '60vh'
                             }}>
-                                {/* Logo animé */}
                                 <div style={{
                                     fontSize: '2rem',
                                     fontWeight: 'bold',
@@ -5096,8 +5145,6 @@ ${summary}`,
                                     <span style={{ color: 'var(--accent-gold)' }}>E</span>
                                     <span style={{ color: 'white' }}>-Cauri</span>
                                 </div>
-                                
-                                {/* Spinner personnalisé */}
                                 <div style={{
                                     width: '50px',
                                     height: '50px',
@@ -5107,181 +5154,176 @@ ${summary}`,
                                     animation: 'spin 1s linear infinite',
                                     marginBottom: '16px'
                                 }}></div>
-                                
-                                {/* Message */}
                                 <div style={{
                                     color: 'var(--text-secondary)',
                                     fontSize: '0.9rem',
                                     textAlign: 'center'
                                 }}>
-                                    📊 Chargement des statistiques...
-                                </div>
-                                
-                                {/* Barre de progression */}
-                                <div style={{
-                                    width: '180px',
-                                    height: '3px',
-                                    background: 'rgba(255,255,255,0.1)',
-                                    borderRadius: '2px',
-                                    marginTop: '16px',
-                                    overflow: 'hidden'
-                                }}>
-                                    <div style={{
-                                        width: '40%',
-                                        height: '100%',
-                                        background: 'var(--accent-gold)',
-                                        borderRadius: '2px',
-                                        animation: 'loading-bar 1.5s ease-in-out infinite'
-                                    }}></div>
+                                    📊 Chargement...
                                 </div>
                             </div>
                         ) : (
                             <>
-                                <div className="stats-grid animate-fade-in">
-                                    <div className="stat-card green">
-                                        <div className="stat-label">Gains</div>
-                                        <div className="stat-value green">+{(stats?.totalGains || 0).toLocaleString()} F</div>
+                                {/* Solde actuel */}
+                                <div className="card animate-fade-in" style={{ marginBottom: '16px', textAlign: 'center' }}>
+                                    <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '8px' }}>
+                                        Solde actuel
                                     </div>
-                                    <div className="stat-card red">
-                                        <div className="stat-label">Pertes</div>
-                                        <div className="stat-value red">-{(stats?.totalLosses || 0).toLocaleString()} F</div>
-                                    </div>
-                                </div>
-
-                                <div className="balance-display animate-fade-in delay-1">
-                                    <div className="balance-label">Solde actuel</div>
-                                    <div className="balance-value">{(stats?.currentBalance || 0).toLocaleString()} FCFA</div>
-                                </div>
-
-                                {/* Stats supplémentaires */}
-                                <div className="card animate-fade-in delay-2" style={{ marginTop: '16px' }}>
-                                    <h4 style={{ marginBottom: '16px', color: 'var(--accent-gold)' }}>📊 Statistiques</h4>
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                                        <div>
-                                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Taux de réussite</div>
-                                            <div style={{ 
-                                                fontFamily: 'Space Mono', 
-                                                fontSize: '1.2rem',
-                                                color: (stats?.winRate || 0) >= 50 ? 'var(--accent-green)' : 'var(--accent-red)'
-                                            }}>{(stats?.winRate || 0).toFixed(1)}%</div>
-                                        </div>
-                                        <div>
-                                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>ROI</div>
-                                            <div style={{ 
-                                                fontFamily: 'Space Mono', 
-                                                fontSize: '1.2rem',
-                                                color: (stats?.roi || 0) >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'
-                                            }}>{(stats?.roi || 0).toFixed(1)}%</div>
-                                        </div>
-                                        <div>
-                                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Paris total</div>
-                                            <div style={{ fontFamily: 'Space Mono', fontSize: '1.2rem' }}>{stats?.totalBets || 0}</div>
-                                        </div>
-                                        <div>
-                                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Mise moyenne</div>
-                                            <div style={{ fontFamily: 'Space Mono', fontSize: '1.2rem' }}>{(stats?.averageBet || 0).toLocaleString()} F</div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* Bouton de recalcul */}
-                                {user && (stats?.totalBets === 0 || stats?.totalGains === 0) && history.length > 0 && (
-                                    <div className="card animate-fade-in delay-2" style={{ 
-                                        marginTop: '16px', 
-                                        background: 'rgba(245, 158, 11, 0.1)',
-                                        border: '1px solid rgba(245, 158, 11, 0.3)'
+                                    <div style={{ 
+                                        fontSize: '2.5rem', 
+                                        fontWeight: '700', 
+                                        color: 'var(--accent-gold)',
+                                        fontFamily: 'Space Mono, monospace',
+                                        marginBottom: '16px'
                                     }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-                                            <span style={{ fontSize: '1.2rem' }}>⚠️</span>
-                                            <span style={{ color: 'var(--accent-gold)', fontWeight: '600' }}>Statistiques incomplètes</span>
-                                        </div>
-                                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-                                            Vos gains et pertes n'ont pas été correctement calculés. 
-                                            Cliquez sur le bouton ci-dessous pour recalculer toutes vos prédictions.
-                                        </p>
-                                        <button 
-                                            className="btn btn-primary"
-                                            style={{ width: '100%' }}
-                                            onClick={handleRecalculateAll}
-                                            disabled={recalculating}
-                                        >
-                                            {recalculating ? (
-                                                <>
-                                                    <span className="spinner"></span>
-                                                    Recalcul en cours...
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <Icons.Calculator />
-                                                    🔄 Recalculer mes gains/pertes
-                                                </>
-                                            )}
-                                        </button>
+                                        {(stats?.currentBalance || 0).toLocaleString()} <span style={{ fontSize: '1.2rem' }}>FCFA</span>
                                     </div>
-                                )}
+                                    <button 
+                                        className="btn btn-primary" 
+                                        style={{ width: '100%' }}
+                                        onClick={() => setShowAddModal(true)}
+                                    >
+                                        ➕ Ajouter un solde
+                                    </button>
+                                </div>
+
+                                {/* Statistiques */}
+                                <div className="stats-grid animate-fade-in" style={{ marginBottom: '16px' }}>
+                                    <div className="stat-card" style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '4px' }}>Gains</div>
+                                        <div style={{ fontSize: '1.3rem', fontWeight: '600', color: 'var(--accent-green)' }}>
+                                            +{(stats?.totalGains || 0).toLocaleString()} F
+                                        </div>
+                                    </div>
+                                    <div className="stat-card" style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '4px' }}>Pertes</div>
+                                        <div style={{ fontSize: '1.3rem', fontWeight: '600', color: 'var(--accent-red)' }}>
+                                            -{(stats?.totalLosses || 0).toLocaleString()} F
+                                        </div>
+                                    </div>
+                                    <div className="stat-card" style={{ background: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '4px' }}>Dépôts</div>
+                                        <div style={{ fontSize: '1.3rem', fontWeight: '600', color: 'var(--accent-blue)' }}>
+                                            +{(stats?.totalDeposits || 0).toLocaleString()} F
+                                        </div>
+                                    </div>
+                                    <div className="stat-card" style={{ background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)' }}>
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '4px' }}>Retraits</div>
+                                        <div style={{ fontSize: '1.3rem', fontWeight: '600', color: 'var(--accent-gold)' }}>
+                                            -{(stats?.totalWithdrawals || 0).toLocaleString()} F
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Profit net */}
+                                <div className="card animate-fade-in delay-1" style={{ 
+                                    marginBottom: '16px',
+                                    background: stats?.netProfit >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                                    border: stats?.netProfit >= 0 ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)'
+                                }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div>
+                                            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '4px' }}>
+                                                Profit net (Gains - Pertes)
+                                            </div>
+                                            <div style={{ 
+                                                fontSize: '1.8rem', 
+                                                fontWeight: '700',
+                                                color: stats?.netProfit >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+                                                fontFamily: 'Space Mono, monospace'
+                                            }}>
+                                                {stats?.netProfit >= 0 ? '+' : ''}{(stats?.netProfit || 0).toLocaleString()} F
+                                            </div>
+                                        </div>
+                                        <div style={{ fontSize: '2rem' }}>
+                                            {stats?.netProfit >= 0 ? '📈' : '📉'}
+                                        </div>
+                                    </div>
+                                </div>
 
                                 {/* Historique */}
-                                {history.length > 0 && (
-                                    <div className="card animate-fade-in delay-3" style={{ marginTop: '16px' }}>
-                                        <h4 style={{ marginBottom: '16px' }}>📜 Historique récent</h4>
-                                        {history.slice(0, 10).map((item, index) => (
-                                            <div key={index} style={{
-                                                display: 'flex',
-                                                justifyContent: 'space-between',
-                                                padding: '8px 0',
-                                                borderBottom: index < Math.min(history.length, 10) - 1 ? '1px solid var(--border-color)' : 'none'
-                                            }}>
-                                                <div>
-                                                    <div style={{ fontSize: '0.85rem' }}>{item.reason || 'Transaction'}</div>
-                                                    <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
-                                                        {item.timestamp ? new Date(item.timestamp).toLocaleDateString('fr-FR') : ''}
-                                                    </div>
-                                                </div>
-                                                <div style={{ 
-                                                    fontFamily: 'Space Mono',
-                                                    color: item.change >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'
-                                                }}>
-                                                    {item.change >= 0 ? '+' : ''}{item.change?.toLocaleString()} F
-                                                </div>
-                                            </div>
-                                        ))}
+                                <div className="card animate-fade-in delay-2" style={{ marginBottom: '80px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                                        <h3 style={{ fontSize: '1.1rem' }}>📜 Historique</h3>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                            {history.length} enregistrement{history.length > 1 ? 's' : ''}
+                                        </span>
                                     </div>
-                                )}
 
-                                {/* Boutons d'action */}
-                                <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
-                                    <button 
-                                        className="btn btn-secondary animate-fade-in delay-3" 
-                                        style={{ flex: 1 }}
-                                        onClick={() => user ? setAdjustmentModal(true) : requireAuth('capital')}
-                                    >
-                                        <Icons.Trending />
-                                        Ajuster
-                                    </button>
-                                    <button 
-                                        className="btn btn-primary animate-fade-in delay-4" 
-                                        style={{ flex: 1 }}
-                                        onClick={() => user ? navigate('recommendations') : requireAuth('recommendations')}
-                                    >
-                                        <Icons.Brain />
-                                        Recommandations
-                                    </button>
+                                    {history.length === 0 ? (
+                                        <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
+                                            <div style={{ fontSize: '3rem', marginBottom: '12px' }}>💼</div>
+                                            <p>Aucune entrée pour le moment</p>
+                                            <p style={{ fontSize: '0.85rem' }}>Ajoutez votre premier solde pour commencer</p>
+                                        </div>
+                                    ) : (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                            {history.map((entry, index) => (
+                                                <div key={entry.id} style={{
+                                                    padding: '14px',
+                                                    background: 'rgba(255,255,255,0.03)',
+                                                    borderRadius: '10px',
+                                                    border: '1px solid rgba(255,255,255,0.05)',
+                                                    transition: 'all 0.2s ease',
+                                                    cursor: 'pointer'
+                                                }} onMouseEnter={(e) => {
+                                                    e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
+                                                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)';
+                                                }} onMouseLeave={(e) => {
+                                                    e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
+                                                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.05)';
+                                                }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                                            <span style={{ fontSize: '1.5rem' }}>{getMotifIcon(entry.motif)}</span>
+                                                            <div>
+                                                                <div style={{ fontSize: '0.95rem', fontWeight: '600', color: getMotifColor(entry.motif) }}>
+                                                                    {entry.motif}
+                                                                </div>
+                                                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                                    {formatDate(entry.timestamp)}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <div style={{ textAlign: 'right' }}>
+                                                            <div style={{ 
+                                                                fontSize: '1.1rem', 
+                                                                fontWeight: '700',
+                                                                color: entry.difference >= 0 ? 'var(--accent-green)' : 'var(--accent-red)',
+                                                                fontFamily: 'Space Mono, monospace'
+                                                            }}>
+                                                                {entry.difference >= 0 ? '+' : ''}{entry.difference.toLocaleString()} F
+                                                            </div>
+                                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                                → {entry.newBalance.toLocaleString()} F
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    {entry.description && (
+                                                        <div style={{ 
+                                                            fontSize: '0.8rem', 
+                                                            color: 'var(--text-secondary)',
+                                                            fontStyle: 'italic',
+                                                            marginTop: '4px',
+                                                            paddingTop: '8px',
+                                                            borderTop: '1px solid rgba(255,255,255,0.05)'
+                                                        }}>
+                                                            {entry.description}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
-
-                                {!user && (
-                                    <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center', marginTop: '12px' }} className="animate-fade-in delay-5">
-                                        Connexion requise pour accéder à toutes les fonctionnalités
-                                    </p>
-                                )}
                             </>
                         )}
                     </main>
-                    <AdjustmentModal />
                     <BottomNav />
+                    <AddModal />
                 </>
             );
         };
-
         const RecommendationsPage = () => {
             const { user, navigate, API_BASE_URL, showNotification } = useApp();
             const [recommendations, setRecommendations] = useState(null);
