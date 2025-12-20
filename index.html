@@ -4866,14 +4866,23 @@ ${summary}`,
 
         const CoverageStrategyPage = () => {
             const { navigate, currentPrediction, selectedOptions, showNotification } = useApp();
+            const [selectedStrategy, setSelectedStrategy] = useState(null);
+            const [showCalculations, setShowCalculations] = useState({});
             
             const matchInfo = currentPrediction?.match || currentPrediction?.matchInfo || currentPrediction?.meta;
             
-            // Récupérer la stratégie générée
-            const strategy = currentPrediction?.hedgingStrategy;
+            // Récupérer la stratégie générée (nouveau format avec multiples stratégies)
+            const strategyData = currentPrediction?.hedgingStrategy;
+            const strategies = strategyData?.strategies || [];
+            const optionsStatus = strategyData?.optionsStatus || [];
+            const matchAnalysis = strategyData?.matchAnalysis;
+            const recommendedStrategyId = strategyData?.recommendedStrategy;
+            
+            // Fallback pour l'ancien format
+            const isOldFormat = !strategies.length && strategyData?.recommendation;
             
             // Options depuis la stratégie ou fallback
-            const strategyOptions = strategy?.options || [];
+            const strategyOptions = strategyData?.options || [];
             const options = strategyOptions.length > 0 
                 ? strategyOptions
                 : (selectedOptions.length > 0 
@@ -4882,260 +4891,515 @@ ${summary}`,
             
             // Calcul des totaux
             const totalStake = options.reduce((sum, opt) => sum + (opt.stake || opt.adjustedStake || 0), 0);
-            const totalPotentialProfit = options.reduce((sum, opt) => sum + (opt.potentialProfit || 0), 0);
-            const totalCashout = options.reduce((sum, opt) => sum + (opt.cashoutValue || 0), 0);
+            const totalPotentialProfit = options.reduce((sum, opt) => sum + (opt.potentialProfit || Math.round((opt.stake || 0) * ((opt.odds || 1.5) - 1))), 0);
+            const totalCashout = options.reduce((sum, opt) => sum + (opt.cashoutValue || opt.cashout || 0), 0);
 
-            const handleApply = () => {
-                showNotification("Stratégie notée ! Continuez à suivre le match.", "success");
-                navigate('pronostics');
+            const handleSelectStrategy = (strategyId) => {
+                setSelectedStrategy(strategyId);
+                showNotification(`Stratégie "${strategyId}" sélectionnée`, "success");
             };
 
-            // Couleur selon la recommandation
-            const getRecommendationStyle = (rec) => {
-                switch(rec) {
-                    case 'secure':
-                    case 'cashout':
-                        return { bg: 'rgba(239, 68, 68, 0.1)', color: 'var(--accent-red)', icon: '🔒', text: 'SÉCURISER' };
-                    case 'hold':
-                        return { bg: 'rgba(16, 185, 129, 0.1)', color: 'var(--accent-green)', icon: '✊', text: 'MAINTENIR' };
-                    case 'monitor':
-                        return { bg: 'rgba(245, 158, 11, 0.1)', color: 'var(--accent-gold)', icon: '👁️', text: 'SURVEILLER' };
-                    case 'consider_cashout':
-                        return { bg: 'rgba(59, 130, 246, 0.1)', color: 'var(--accent-blue)', icon: '💭', text: 'À CONSIDÉRER' };
-                    default:
-                        return { bg: 'rgba(107, 114, 128, 0.1)', color: 'var(--text-secondary)', icon: '⏳', text: 'EN COURS' };
+            const toggleCalculations = (strategyId) => {
+                setShowCalculations(prev => ({
+                    ...prev,
+                    [strategyId]: !prev[strategyId]
+                }));
+            };
+
+            // Couleur selon le niveau de risque
+            const getRiskStyle = (riskLevel, riskScore) => {
+                if (riskLevel === 'low' || riskScore <= 3) {
+                    return { bg: 'rgba(16, 185, 129, 0.15)', color: '#10b981', icon: '🟢' };
+                } else if (riskLevel === 'medium' || riskScore <= 6) {
+                    return { bg: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', icon: '🟡' };
+                } else {
+                    return { bg: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', icon: '🔴' };
+                }
+            };
+
+            // Couleur selon le statut
+            const getStatusStyle = (status) => {
+                switch(status) {
+                    case 'won': return { bg: 'rgba(16, 185, 129, 0.2)', color: '#10b981', icon: '✅' };
+                    case 'winning': return { bg: 'rgba(16, 185, 129, 0.15)', color: '#22c55e', icon: '📈' };
+                    case 'losing': return { bg: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', icon: '📉' };
+                    case 'lost': return { bg: 'rgba(239, 68, 68, 0.2)', color: '#dc2626', icon: '❌' };
+                    default: return { bg: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', icon: '⏳' };
                 }
             };
 
             return (
                 <>
-                    <Header showBack={true} title="Stratégie de couverture" />
-                    <main className="main-content">
+                    <Header showBack={true} title="Stratégies de couverture" />
+                    <main className="main-content" style={{ paddingBottom: '100px' }}>
                         {/* Match info */}
                         {matchInfo && (
                             <div className="card animate-fade-in" style={{ marginBottom: '16px' }}>
-                                <h3>{matchInfo.homeTeam} vs {matchInfo.awayTeam}</h3>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{matchInfo.league}</p>
-                            </div>
-                        )}
-
-                        {/* Badge mode démo si applicable */}
-                        {strategy?.isDemo && (
-                            <div style={{ 
-                                background: 'rgba(245, 158, 11, 0.1)', 
-                                border: '1px solid rgba(245, 158, 11, 0.3)',
-                                borderRadius: '8px',
-                                padding: '8px 12px',
-                                marginBottom: '16px',
-                                fontSize: '0.8rem',
-                                color: 'var(--accent-gold)'
-                            }}>
-                                ⚠️ Mode démonstration - Stratégie simulée basée sur les données disponibles
-                            </div>
-                        )}
-
-                        {/* Recommandation principale */}
-                        <div className="recommendation-box animate-fade-in delay-1">
-                            <div className="recommendation-title">
-                                <Icons.Shield />
-                                {strategy?.recommendation ? 
-                                    `Recommandation: ${getRecommendationStyle(strategy.recommendation).text}` : 
-                                    'Recommandation IA'}
-                            </div>
-                            <div className="recommendation-text" style={{ whiteSpace: 'pre-line' }}>
-                                {strategy?.analysis || 
-                                    "Basé sur l'analyse et les cotes actuelles, voici notre stratégie de couverture optimale."}
-                            </div>
-                            {strategy?.summary && (
-                                <div style={{ 
-                                    marginTop: '12px', 
-                                    padding: '10px', 
-                                    background: 'rgba(16, 185, 129, 0.1)', 
-                                    borderRadius: '8px',
-                                    fontSize: '0.9rem'
-                                }}>
-                                    💡 {strategy.summary}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Actions par option */}
-                        <div className="card animate-fade-in delay-2">
-                            <h4 style={{ marginBottom: '16px', color: 'var(--accent-gold)' }}>📋 Détail par option</h4>
-                            
-                            {options.map((opt, index) => {
-                                const recStyle = getRecommendationStyle(opt.recommendation);
-                                const statusStyle = getRecommendationStyle(opt.currentStatus);
-                                const stake = opt.stake || opt.adjustedStake || 0;
-                                const profit = opt.potentialProfit || Math.round(stake * ((opt.odds || 1.5) - 1));
-                                
-                                return (
-                                    <div key={index} style={{ 
-                                        marginBottom: '16px',
-                                        paddingBottom: index < options.length - 1 ? '16px' : '0',
-                                        borderBottom: index < options.length - 1 ? '1px solid var(--border-color)' : 'none'
-                                    }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                                            <span style={{ fontWeight: '500' }}>{opt.option}</span>
-                                            <span style={{ 
-                                                padding: '4px 10px', 
-                                                borderRadius: '12px', 
-                                                background: recStyle.bg,
-                                                color: recStyle.color, 
-                                                fontWeight: '600', 
-                                                fontSize: '0.75rem' 
-                                            }}>
-                                                {recStyle.icon} {recStyle.text}
-                                            </span>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <div>
+                                        <h3 style={{ marginBottom: '4px' }}>{matchInfo.homeTeam} vs {matchInfo.awayTeam}</h3>
+                                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: 0 }}>{matchInfo.league}</p>
+                                    </div>
+                                    {strategyData?.calculations?.avgWinProbability !== undefined && (
+                                        <div style={{ 
+                                            padding: '8px 12px', 
+                                            background: 'rgba(59, 130, 246, 0.15)',
+                                            borderRadius: '8px',
+                                            textAlign: 'center'
+                                        }}>
+                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Prob. succès</div>
+                                            <div style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--accent-blue)' }}>
+                                                {strategyData.calculations.avgWinProbability}%
+                                            </div>
                                         </div>
-                                        
-                                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
-                                            <div style={{ fontSize: '0.8rem' }}>
-                                                <span style={{ color: 'var(--text-muted)' }}>Mise: </span>
-                                                <span style={{ fontFamily: 'Space Mono' }}>{stake.toLocaleString()} F</span>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Analyse du match */}
+                        {matchAnalysis && (
+                            <div className="card animate-fade-in delay-1" style={{ marginBottom: '16px' }}>
+                                <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>📊 Analyse du match</h4>
+                                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                                    <p style={{ marginBottom: '8px' }}>🎯 {matchAnalysis.currentSituation}</p>
+                                    <p style={{ marginBottom: '8px' }}>📈 {matchAnalysis.trendsObserved}</p>
+                                    <p style={{ margin: 0 }}>⚠️ {matchAnalysis.riskAssessment}</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Statut des options */}
+                        {optionsStatus.length > 0 && (
+                            <div className="card animate-fade-in delay-1" style={{ marginBottom: '16px' }}>
+                                <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>📋 Statut de vos paris</h4>
+                                {optionsStatus.map((opt, idx) => {
+                                    const statusStyle = getStatusStyle(opt.status);
+                                    return (
+                                        <div key={idx} style={{
+                                            padding: '12px',
+                                            marginBottom: idx < optionsStatus.length - 1 ? '10px' : 0,
+                                            background: statusStyle.bg,
+                                            borderRadius: '10px',
+                                            borderLeft: `4px solid ${statusStyle.color}`
+                                        }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                                                <span style={{ fontWeight: '600', fontSize: '0.95rem' }}>{opt.option}</span>
+                                                <span style={{ 
+                                                    padding: '4px 10px', 
+                                                    background: statusStyle.bg, 
+                                                    color: statusStyle.color,
+                                                    borderRadius: '12px',
+                                                    fontSize: '0.75rem',
+                                                    fontWeight: '600'
+                                                }}>
+                                                    {statusStyle.icon} {opt.status?.toUpperCase()}
+                                                </span>
                                             </div>
-                                            <div style={{ fontSize: '0.8rem' }}>
-                                                <span style={{ color: 'var(--text-muted)' }}>Cote: </span>
-                                                <span style={{ fontFamily: 'Space Mono' }}>{(opt.odds || 1.5).toFixed(2)}</span>
-                                            </div>
-                                            <div style={{ fontSize: '0.8rem' }}>
-                                                <span style={{ color: 'var(--text-muted)' }}>Gain potentiel: </span>
-                                                <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-green)' }}>+{profit.toLocaleString()} F</span>
-                                            </div>
-                                            {opt.cashoutValue && (
-                                                <div style={{ fontSize: '0.8rem' }}>
-                                                    <span style={{ color: 'var(--text-muted)' }}>Cashout: </span>
-                                                    <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-gold)' }}>{opt.cashoutValue.toLocaleString()} F</span>
+                                            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>{opt.analysis}</p>
+                                            {opt.probability !== undefined && (
+                                                <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                    <div style={{ flex: 1, height: '6px', background: 'rgba(0,0,0,0.2)', borderRadius: '3px', overflow: 'hidden' }}>
+                                                        <div style={{ 
+                                                            width: `${opt.probability * 100}%`, 
+                                                            height: '100%', 
+                                                            background: statusStyle.color,
+                                                            borderRadius: '3px'
+                                                        }}></div>
+                                                    </div>
+                                                    <span style={{ fontSize: '0.75rem', fontFamily: 'Space Mono', color: statusStyle.color }}>
+                                                        {Math.round(opt.probability * 100)}%
+                                                    </span>
                                                 </div>
                                             )}
                                         </div>
-                                        
-                                        {/* Statut actuel */}
-                                        {opt.currentStatus && opt.currentStatus !== 'pending' && (
-                                            <div style={{ 
-                                                padding: '6px 10px', 
-                                                borderRadius: '6px', 
-                                                background: statusStyle.bg,
-                                                fontSize: '0.8rem',
-                                                marginBottom: '8px'
-                                            }}>
-                                                <span style={{ color: statusStyle.color }}>{statusStyle.icon} Statut: {statusStyle.text}</span>
+                                    );
+                                })}
+                            </div>
+                        )}
+
+                        {/* ========== LES 4 STRATÉGIES ========== */}
+                        {strategies.length > 0 ? (
+                            <>
+                                <h3 className="section-title animate-fade-in delay-2" style={{ marginBottom: '16px' }}>
+                                    🎯 Choisissez votre stratégie
+                                </h3>
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
+                                    4 stratégies calculées avec leurs preuves. Cliquez sur une stratégie pour voir les calculs détaillés.
+                                </p>
+
+                                {strategies.map((strat, idx) => {
+                                    const riskStyle = getRiskStyle(strat.riskLevel, strat.riskScore);
+                                    const isRecommended = strat.id === recommendedStrategyId || strat.recommended;
+                                    const isSelected = selectedStrategy === strat.id;
+                                    const showCalc = showCalculations[strat.id];
+
+                                    return (
+                                        <div 
+                                            key={strat.id}
+                                            className={`card animate-fade-in delay-${Math.min(idx + 2, 5)}`}
+                                            style={{ 
+                                                marginBottom: '16px',
+                                                border: isRecommended ? '2px solid var(--accent-gold)' : isSelected ? '2px solid var(--accent-blue)' : '1px solid var(--border-color)',
+                                                position: 'relative',
+                                                overflow: 'hidden'
+                                            }}
+                                        >
+                                            {/* Badge recommandé */}
+                                            {isRecommended && (
+                                                <div style={{
+                                                    position: 'absolute',
+                                                    top: 0,
+                                                    right: 0,
+                                                    background: 'var(--accent-gold)',
+                                                    color: 'black',
+                                                    padding: '4px 12px',
+                                                    fontSize: '0.7rem',
+                                                    fontWeight: '700',
+                                                    borderBottomLeftRadius: '8px'
+                                                }}>
+                                                    ⭐ RECOMMANDÉ
+                                                </div>
+                                            )}
+
+                                            {/* En-tête de la stratégie */}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                                                <div>
+                                                    <h4 style={{ fontSize: '1.1rem', marginBottom: '4px' }}>{strat.name}</h4>
+                                                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>{strat.description}</p>
+                                                </div>
+                                                <div style={{
+                                                    padding: '6px 12px',
+                                                    background: riskStyle.bg,
+                                                    borderRadius: '8px',
+                                                    textAlign: 'center'
+                                                }}>
+                                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Risque</div>
+                                                    <div style={{ fontSize: '0.9rem', fontWeight: '700', color: riskStyle.color }}>
+                                                        {riskStyle.icon} {strat.riskScore}/10
+                                                    </div>
+                                                </div>
                                             </div>
-                                        )}
-                                        
-                                        {opt.analysis && (
-                                            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                                                {opt.analysis}
-                                            </p>
-                                        )}
+
+                                            {/* Scénarios de profit */}
+                                            <div style={{ 
+                                                display: 'grid', 
+                                                gridTemplateColumns: '1fr 1fr', 
+                                                gap: '10px',
+                                                marginBottom: '12px'
+                                            }}>
+                                                {strat.scenarios?.slice(0, 2).map((scenario, sIdx) => (
+                                                    <div key={sIdx} style={{
+                                                        padding: '10px',
+                                                        background: scenario.profit >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                                                        borderRadius: '8px',
+                                                        borderLeft: `3px solid ${scenario.profit >= 0 ? '#10b981' : '#ef4444'}`
+                                                    }}>
+                                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                                            {scenario.name}
+                                                        </div>
+                                                        <div style={{ 
+                                                            fontSize: '1.1rem', 
+                                                            fontWeight: '700',
+                                                            fontFamily: 'Space Mono',
+                                                            color: scenario.profit >= 0 ? '#10b981' : '#ef4444'
+                                                        }}>
+                                                            {scenario.profit >= 0 ? '+' : ''}{scenario.profit?.toLocaleString()} F
+                                                        </div>
+                                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                                            Prob: {Math.round((scenario.probability || 0) * 100)}%
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            {/* Bouton pour voir les calculs */}
+                                            <button 
+                                                className="btn btn-secondary"
+                                                style={{ width: '100%', marginBottom: '12px', fontSize: '0.85rem' }}
+                                                onClick={() => toggleCalculations(strat.id)}
+                                            >
+                                                {showCalc ? '🔼 Masquer les calculs' : '🔽 Voir les calculs détaillés'}
+                                            </button>
+
+                                            {/* Calculs détaillés (collapsible) */}
+                                            {showCalc && (
+                                                <div style={{
+                                                    padding: '14px',
+                                                    background: 'rgba(0,0,0,0.3)',
+                                                    borderRadius: '10px',
+                                                    marginBottom: '12px'
+                                                }}>
+                                                    <h5 style={{ marginBottom: '10px', color: 'var(--accent-gold)', fontSize: '0.9rem' }}>
+                                                        📐 Formule & Calculs
+                                                    </h5>
+                                                    
+                                                    {/* Formule */}
+                                                    <div style={{
+                                                        padding: '10px',
+                                                        background: 'rgba(59, 130, 246, 0.1)',
+                                                        borderRadius: '6px',
+                                                        marginBottom: '10px',
+                                                        fontFamily: 'Space Mono',
+                                                        fontSize: '0.8rem',
+                                                        color: 'var(--accent-blue)'
+                                                    }}>
+                                                        {strat.calculations?.formula}
+                                                    </div>
+
+                                                    {/* Détails */}
+                                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                                        {strat.calculations?.details?.map((detail, dIdx) => (
+                                                            <div key={dIdx} style={{
+                                                                padding: '6px 10px',
+                                                                background: 'rgba(255,255,255,0.03)',
+                                                                borderRadius: '4px',
+                                                                marginBottom: '6px',
+                                                                borderLeft: '2px solid var(--accent-gold)'
+                                                            }}>
+                                                                {detail}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+
+                                                    {/* Explications des scénarios */}
+                                                    {strat.scenarios?.map((scenario, sIdx) => (
+                                                        <div key={sIdx} style={{
+                                                            marginTop: '10px',
+                                                            padding: '10px',
+                                                            background: 'rgba(255,255,255,0.02)',
+                                                            borderRadius: '6px'
+                                                        }}>
+                                                            <div style={{ fontWeight: '600', marginBottom: '4px', fontSize: '0.85rem' }}>
+                                                                {scenario.name}
+                                                            </div>
+                                                            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontFamily: 'Space Mono' }}>
+                                                                {scenario.explanation}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+
+                                                    {/* Valeur attendue */}
+                                                    {strat.calculations?.expectedValue !== undefined && (
+                                                        <div style={{
+                                                            marginTop: '12px',
+                                                            padding: '10px',
+                                                            background: strat.calculations.expectedValue >= 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                                                            borderRadius: '6px',
+                                                            display: 'flex',
+                                                            justifyContent: 'space-between',
+                                                            alignItems: 'center'
+                                                        }}>
+                                                            <span style={{ fontSize: '0.85rem' }}>📊 Espérance mathématique:</span>
+                                                            <span style={{ 
+                                                                fontFamily: 'Space Mono', 
+                                                                fontWeight: '700',
+                                                                color: strat.calculations.expectedValue >= 0 ? '#10b981' : '#ef4444'
+                                                            }}>
+                                                                {strat.calculations.expectedValue >= 0 ? '+' : ''}{strat.calculations.expectedValue?.toLocaleString()} FCFA
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            {/* Actions à effectuer */}
+                                            {strat.actions?.length > 0 && (
+                                                <div style={{
+                                                    padding: '12px',
+                                                    background: 'rgba(245, 158, 11, 0.1)',
+                                                    borderRadius: '8px',
+                                                    marginBottom: '12px'
+                                                }}>
+                                                    <div style={{ fontWeight: '600', marginBottom: '8px', fontSize: '0.85rem', color: 'var(--accent-gold)' }}>
+                                                        📝 Action(s) à effectuer:
+                                                    </div>
+                                                    {strat.actions.map((action, aIdx) => (
+                                                        <div key={aIdx} style={{
+                                                            padding: '8px 10px',
+                                                            background: 'rgba(0,0,0,0.2)',
+                                                            borderRadius: '6px',
+                                                            marginBottom: aIdx < strat.actions.length - 1 ? '6px' : 0,
+                                                            fontSize: '0.85rem'
+                                                        }}>
+                                                            <strong>{action.action}</strong>: {action.bet || action.option}
+                                                            {action.amount && (
+                                                                <span style={{ color: 'var(--accent-gold)', marginLeft: '8px' }}>
+                                                                    {action.amount.toLocaleString()} FCFA
+                                                                </span>
+                                                            )}
+                                                            {action.odds && (
+                                                                <span style={{ color: 'var(--text-muted)', marginLeft: '8px' }}>
+                                                                    @ {action.odds}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {/* Avantages / Inconvénients */}
+                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+                                                <div style={{ padding: '10px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px' }}>
+                                                    <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#10b981', marginBottom: '6px' }}>
+                                                        ✅ Avantages
+                                                    </div>
+                                                    {strat.pros?.slice(0, 2).map((pro, pIdx) => (
+                                                        <div key={pIdx} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                                                            • {pro}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px' }}>
+                                                    <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#ef4444', marginBottom: '6px' }}>
+                                                        ⚠️ Inconvénients
+                                                    </div>
+                                                    {strat.cons?.slice(0, 2).map((con, cIdx) => (
+                                                        <div key={cIdx} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                                                            • {con}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* Résumé */}
+                                            <div style={{
+                                                padding: '10px 12px',
+                                                background: 'rgba(255,255,255,0.03)',
+                                                borderRadius: '6px',
+                                                fontSize: '0.85rem',
+                                                color: 'var(--text-secondary)',
+                                                fontStyle: 'italic',
+                                                marginBottom: '12px'
+                                            }}>
+                                                💡 {strat.summary}
+                                            </div>
+
+                                            {/* Bouton sélectionner */}
+                                            <button 
+                                                className={`btn ${isSelected ? 'btn-success' : 'btn-primary'}`}
+                                                style={{ width: '100%' }}
+                                                onClick={() => handleSelectStrategy(strat.id)}
+                                            >
+                                                {isSelected ? '✅ Stratégie sélectionnée' : `Choisir cette stratégie`}
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+
+                                {/* Explication du choix recommandé */}
+                                {strategyData?.reasoning && (
+                                    <div className="card animate-fade-in" style={{
+                                        marginBottom: '16px',
+                                        background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%)',
+                                        border: '1px solid rgba(139, 92, 246, 0.3)'
+                                    }}>
+                                        <h4 style={{ marginBottom: '8px', color: '#a78bfa' }}>🧠 Pourquoi cette recommandation ?</h4>
+                                        <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.6' }}>
+                                            {strategyData.reasoning}
+                                        </p>
                                     </div>
-                                );
-                            })}
-                        </div>
+                                )}
+                            </>
+                        ) : isOldFormat ? (
+                            /* Ancien format - affichage simple */
+                            <div className="card animate-fade-in delay-2">
+                                <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>
+                                    Recommandation: {strategyData?.recommendation?.toUpperCase()}
+                                </h4>
+                                <p style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-line' }}>
+                                    {strategyData?.analysis}
+                                </p>
+                                {strategyData?.summary && (
+                                    <div style={{ 
+                                        marginTop: '12px', 
+                                        padding: '12px', 
+                                        background: 'rgba(16, 185, 129, 0.1)', 
+                                        borderRadius: '8px' 
+                                    }}>
+                                        💡 {strategyData.summary}
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="card animate-fade-in" style={{ textAlign: 'center', padding: '40px 20px' }}>
+                                <div style={{ fontSize: '3rem', marginBottom: '12px' }}>🛡️</div>
+                                <p style={{ color: 'var(--text-muted)' }}>
+                                    Aucune stratégie générée. Retournez à la page de suivi pour générer une stratégie.
+                                </p>
+                            </div>
+                        )}
 
                         {/* Résumé des totaux */}
-                        <div className="card animate-fade-in delay-3">
-                            <h4 style={{ marginBottom: '16px' }}>📊 Résumé</h4>
+                        <div className="card animate-fade-in" style={{ marginBottom: '16px' }}>
+                            <h4 style={{ marginBottom: '16px' }}>📊 Résumé de votre position</h4>
                             
-                            <div style={{ 
-                                display: 'flex', 
-                                justifyContent: 'space-between', 
-                                padding: '12px 0',
-                                borderBottom: '1px solid var(--border-color)'
-                            }}>
-                                <span style={{ color: 'var(--text-secondary)' }}>💰 Total misé</span>
-                                <span style={{ fontFamily: 'Space Mono', fontWeight: 'bold' }}>
-                                    {totalStake.toLocaleString()} FCFA
-                                </span>
-                            </div>
-                            
-                            <div style={{ 
-                                display: 'flex', 
-                                justifyContent: 'space-between', 
-                                padding: '12px 0',
-                                borderBottom: '1px solid var(--border-color)'
-                            }}>
-                                <span style={{ color: 'var(--text-secondary)' }}>🎯 Gain potentiel max</span>
-                                <span style={{ color: 'var(--accent-green)', fontFamily: 'Space Mono', fontWeight: 'bold' }}>
-                                    +{totalPotentialProfit.toLocaleString()} FCFA
-                                </span>
-                            </div>
-                            
-                            {totalCashout > 0 && (
-                                <div style={{ 
-                                    display: 'flex', 
-                                    justifyContent: 'space-between', 
-                                    padding: '12px 0',
-                                    borderBottom: '1px solid var(--border-color)'
-                                }}>
-                                    <span style={{ color: 'var(--text-secondary)' }}>💵 Total cashouts dispo</span>
-                                    <span style={{ color: 'var(--accent-gold)', fontFamily: 'Space Mono', fontWeight: 'bold' }}>
-                                        {totalCashout.toLocaleString()} FCFA
-                                    </span>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                                <div style={{ padding: '12px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '8px' }}>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total misé</div>
+                                    <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono' }}>
+                                        {totalStake.toLocaleString()} F
+                                    </div>
                                 </div>
-                            )}
-                            
-                            <div style={{ 
-                                display: 'flex', 
-                                justifyContent: 'space-between', 
-                                padding: '12px 0'
-                            }}>
-                                <span style={{ color: 'var(--text-secondary)' }}>💀 Perte max (sans hedge)</span>
-                                <span style={{ color: 'var(--accent-red)', fontFamily: 'Space Mono', fontWeight: 'bold' }}>
-                                    -{totalStake.toLocaleString()} FCFA
-                                </span>
-                            </div>
-                            
-                            {/* Confiance de la stratégie */}
-                            {strategy?.confidence && (
-                                <div style={{ 
-                                    display: 'flex', 
-                                    justifyContent: 'space-between', 
-                                    alignItems: 'center',
-                                    padding: '12px',
-                                    background: 'rgba(16, 185, 129, 0.1)',
-                                    borderRadius: '8px',
-                                    marginTop: '12px'
-                                }}>
-                                    <span style={{ color: 'var(--accent-green)', fontWeight: '600' }}>📊 Confiance analyse</span>
-                                    <span style={{ fontFamily: 'Space Mono', fontWeight: 'bold' }}>
-                                        {Math.round(strategy.confidence * 100)}%
-                                    </span>
+                                <div style={{ padding: '12px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px' }}>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Gain potentiel</div>
+                                    <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#10b981' }}>
+                                        +{totalPotentialProfit.toLocaleString()} F
+                                    </div>
                                 </div>
-                            )}
+                                {totalCashout > 0 && (
+                                    <div style={{ padding: '12px', background: 'rgba(245, 158, 11, 0.1)', borderRadius: '8px' }}>
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Cashout dispo</div>
+                                        <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#f59e0b' }}>
+                                            {totalCashout.toLocaleString()} F
+                                        </div>
+                                    </div>
+                                )}
+                                <div style={{ padding: '12px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px' }}>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Perte max</div>
+                                    <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#ef4444' }}>
+                                        -{totalStake.toLocaleString()} F
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         {/* Note IA */}
-                        <div className="animate-fade-in delay-4" style={{
+                        <div className="animate-fade-in" style={{
                             background: 'rgba(139, 92, 246, 0.1)',
                             border: '1px solid rgba(139, 92, 246, 0.3)',
                             borderRadius: '12px',
                             padding: '16px',
-                            marginTop: '16px'
+                            marginBottom: '16px'
                         }}>
                             <p style={{ color: '#a78bfa', fontSize: '0.85rem', marginBottom: '8px', fontWeight: '600' }}>
-                                🧠 {strategy?.isDemo ? 'Analyse Simulée' : 'Analyse Claude AI'}
+                                🧠 {strategyData?.isDemo ? 'Analyse Calculée' : `Analyse ${strategyData?.engine || 'IA'}`}
                             </p>
-                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', lineHeight: '1.5' }}>
-                                {strategy?.isDemo 
-                                    ? "Cette recommandation est générée en mode démonstration. Pour une analyse complète avec l'IA Claude, assurez-vous que le serveur est connecté."
-                                    : "Cette recommandation est basée sur l'évolution du match, les cotes live et votre profil de risque. La stratégie vise à optimiser vos gains tout en minimisant les risques."
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', lineHeight: '1.5', margin: 0 }}>
+                                {strategyData?.isDemo 
+                                    ? "Ces stratégies sont calculées mathématiquement. Pour une analyse IA complète avec DeepSeek Reasoner, vérifiez la configuration du serveur."
+                                    : "Ces stratégies combinent analyse IA et calculs mathématiques pour vous offrir les meilleures options de couverture."
                                 }
                             </p>
-                            {strategy?.generatedAt && (
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '8px' }}>
-                                    Générée le {new Date(strategy.generatedAt).toLocaleString('fr-FR')}
+                            {strategyData?.generatedAt && (
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '8px', marginBottom: 0 }}>
+                                    Générée le {new Date(strategyData.generatedAt).toLocaleString('fr-FR')}
                                 </p>
                             )}
                         </div>
 
                         <button 
-                            className="btn btn-success animate-fade-in delay-5" 
-                            style={{ width: '100%', marginTop: '20px', marginBottom: '20px' }}
-                            onClick={handleApply}
+                            className="btn btn-success animate-fade-in" 
+                            style={{ width: '100%', marginBottom: '20px' }}
+                            onClick={() => {
+                                if (selectedStrategy) {
+                                    showNotification(`Stratégie "${selectedStrategy}" appliquée !`, "success");
+                                }
+                                navigate('pronostics');
+                            }}
                         >
                             <Icons.Check />
-                            Compris, retour aux pronostics
+                            {selectedStrategy ? `Appliquer "${selectedStrategy}" et retourner` : 'Retour aux pronostics'}
                         </button>
                     </main>
                     <BottomNav />
