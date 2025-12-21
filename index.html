@@ -1134,7 +1134,7 @@
             };
 
             // Analyze prediction via API
-            const analyzePrediction = async (opportunityId, balance, bookmaker = 'default') => {
+            const analyzePrediction = async (opportunityId, balance, bookmaker = 'default', stakePercentage = 6) => {
                 // Vérifier le token d'authentification
                 const token = localStorage.getItem('authToken');
                 if (!token) {
@@ -1143,7 +1143,7 @@
                     return;
                 }
 
-                console.log('🔮 Starting analysis...', { opportunityId, balance, bookmaker });
+                console.log('🔮 Starting analysis...', { opportunityId, balance, bookmaker, stakePercentage });
 
                 // 1. Créer immédiatement une prédiction avec statut "analyzing"
                 const tempPrediction = {
@@ -1164,6 +1164,7 @@
                     },
                     selectedBookmaker: bookmaker,
                     userBalance: balance,
+                    stakePercentage: stakePercentage,
                     status: 'analyzing',
                     createdAt: new Date().toISOString(),
                     isAnalyzing: true
@@ -1182,7 +1183,7 @@
                         `${API_BASE_URL}/predictions/analyze`,
                         {
                             method: 'POST',
-                            body: JSON.stringify({ opportunityId, userBalance: balance, bookmaker })
+                            body: JSON.stringify({ opportunityId, userBalance: balance, bookmaker, stakePercentage })
                         }
                     );
 
@@ -1831,6 +1832,7 @@
             const [bookmaker, setBookmaker] = useState('1xbet');
             const [bookmakers, setBookmakers] = useState({ popular: [], available: [] });
             const [loadingBookmakers, setLoadingBookmakers] = useState(true);
+            const [stakePercentage, setStakePercentage] = useState(6); // Pourcentage de mise par défaut
 
             // Charger les bookmakers disponibles pour ce match
             useEffect(() => {
@@ -1896,7 +1898,7 @@
                     return;
                 }
                 if (selectedMatch) {
-                    await analyzePrediction(selectedMatch.id, parseInt(balance), bookmaker);
+                    await analyzePrediction(selectedMatch.id, parseInt(balance), bookmaker, stakePercentage);
                 }
             };
 
@@ -2022,6 +2024,82 @@
                             </p>
                         </div>
 
+                        {/* Sélecteur de pourcentage de mise */}
+                        <div className="input-group animate-fade-in delay-2">
+                            <label className="input-label">
+                                Pourcentage du capital à risquer
+                                <span style={{ 
+                                    marginLeft: '8px', 
+                                    fontSize: '0.75rem', 
+                                    background: stakePercentage <= 5 ? 'var(--accent-green)' : stakePercentage <= 8 ? 'var(--accent-gold)' : 'var(--accent-red)', 
+                                    padding: '2px 8px', 
+                                    borderRadius: '10px',
+                                    color: 'white'
+                                }}>
+                                    {stakePercentage <= 5 ? '🛡️ Prudent' : stakePercentage <= 8 ? '⚖️ Modéré' : '🔥 Agressif'}
+                                </span>
+                            </label>
+                            
+                            <div style={{ 
+                                display: 'grid', 
+                                gridTemplateColumns: 'repeat(5, 1fr)', 
+                                gap: '8px',
+                                marginTop: '8px'
+                            }}>
+                                {[3, 5, 6, 8, 10].map(pct => (
+                                    <button
+                                        key={pct}
+                                        type="button"
+                                        onClick={() => setStakePercentage(pct)}
+                                        style={{
+                                            padding: '12px 8px',
+                                            borderRadius: '10px',
+                                            border: stakePercentage === pct ? '2px solid var(--accent-gold)' : '1px solid var(--border-color)',
+                                            background: stakePercentage === pct ? 'rgba(245, 158, 11, 0.2)' : 'var(--bg-card)',
+                                            color: stakePercentage === pct ? 'var(--accent-gold)' : 'var(--text-secondary)',
+                                            fontWeight: stakePercentage === pct ? '700' : '500',
+                                            cursor: 'pointer',
+                                            fontSize: '1rem',
+                                            fontFamily: 'Space Mono, monospace',
+                                            transition: 'all 0.2s'
+                                        }}
+                                    >
+                                        {pct}%
+                                    </button>
+                                ))}
+                            </div>
+                            
+                            <div style={{ 
+                                display: 'flex', 
+                                justifyContent: 'space-between',
+                                marginTop: '12px',
+                                padding: '10px 12px',
+                                background: 'rgba(0,0,0,0.2)',
+                                borderRadius: '8px'
+                            }}>
+                                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                    Budget max avec {stakePercentage}%:
+                                </span>
+                                <span style={{ 
+                                    fontSize: '1rem', 
+                                    fontWeight: '700', 
+                                    color: 'var(--accent-gold)',
+                                    fontFamily: 'Space Mono, monospace'
+                                }}>
+                                    {balance ? Math.round(parseInt(balance) * stakePercentage / 100).toLocaleString() : '0'} FCFA
+                                </span>
+                            </div>
+                            
+                            <p style={{ 
+                                color: 'var(--text-muted)', 
+                                fontSize: '0.75rem', 
+                                marginTop: '8px',
+                                textAlign: 'center'
+                            }}>
+                                💡 Kelly recommande 3-6% pour limiter le risque de ruine
+                            </p>
+                        </div>
+
                         {/* Info sur les moteurs IA */}
                         <div className="animate-fade-in delay-2" style={{
                             background: 'rgba(59, 130, 246, 0.1)',
@@ -2058,8 +2136,8 @@
                                 marginTop: '12px'
                             }}>
                                 Budget max recommandé: <strong style={{ color: 'var(--accent-gold)' }}>
-                                    {Math.round(parseInt(balance) * 0.06).toLocaleString()} FCFA
-                                </strong> (6% du capital)
+                                    {Math.round(parseInt(balance) * stakePercentage / 100).toLocaleString()} FCFA
+                                </strong> ({stakePercentage}% du capital)
                             </p>
                         )}
                     </main>
@@ -2480,185 +2558,6 @@
                             </div>
                         )}
 
-                        {/* ========== SYNTHÈSE DES VALUE BETS ========== */}
-                        {!isReadOnly && options.length > 0 && (
-                            <div className="card animate-fade-in delay-2" style={{ 
-                                marginBottom: '20px',
-                                padding: '16px',
-                                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%)',
-                                border: '1px solid rgba(16, 185, 129, 0.3)'
-                            }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-                                    <span style={{ fontSize: '1.5rem' }}>📊</span>
-                                    <div>
-                                        <h4 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-primary)' }}>Synthèse des Value Bets</h4>
-                                        <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                            EDGE = (Probabilité × Cote) - 1 | Value bet si EDGE {'>'} 0%
-                                        </p>
-                                    </div>
-                                </div>
-                                
-                                {/* Tableau des options avec EDGE */}
-                                <div style={{ 
-                                    background: 'rgba(0,0,0,0.3)', 
-                                    borderRadius: '10px', 
-                                    overflow: 'hidden'
-                                }}>
-                                    {/* En-tête */}
-                                    <div style={{ 
-                                        display: 'grid', 
-                                        gridTemplateColumns: '2fr 1fr 1fr 1fr 1.5fr',
-                                        padding: '10px 12px',
-                                        background: 'rgba(255,255,255,0.05)',
-                                        fontSize: '0.7rem',
-                                        fontWeight: '600',
-                                        color: 'var(--text-muted)',
-                                        textTransform: 'uppercase',
-                                        letterSpacing: '0.5px'
-                                    }}>
-                                        <div>Option</div>
-                                        <div style={{ textAlign: 'center' }}>Cote</div>
-                                        <div style={{ textAlign: 'center' }}>Prob.</div>
-                                        <div style={{ textAlign: 'center' }}>EDGE</div>
-                                        <div style={{ textAlign: 'center' }}>Verdict</div>
-                                    </div>
-                                    
-                                    {/* Lignes */}
-                                    {options.map((opt, idx) => {
-                                        const prob = opt.estimatedProbability || opt.probability || 0;
-                                        const odds = opt.odds || 1;
-                                        const edge = (prob * odds) - 1;
-                                        const edgePercent = Math.round(edge * 1000) / 10;
-                                        
-                                        let verdictIcon, verdictText, verdictColor;
-                                        if (edgePercent >= 6) {
-                                            verdictIcon = '🟢'; verdictText = 'EXCELLENT'; verdictColor = '#10b981';
-                                        } else if (edgePercent >= 3) {
-                                            verdictIcon = '🟡'; verdictText = 'BON'; verdictColor = '#eab308';
-                                        } else if (edgePercent >= 0) {
-                                            verdictIcon = '🟠'; verdictText = 'FAIBLE'; verdictColor = '#f97316';
-                                        } else if (edgePercent >= -6) {
-                                            verdictIcon = '🔴'; verdictText = 'ÉVITER'; verdictColor = '#ef4444';
-                                        } else {
-                                            verdictIcon = '⛔'; verdictText = 'DANGER'; verdictColor = '#dc2626';
-                                        }
-                                        
-                                        return (
-                                            <div key={idx} style={{ 
-                                                display: 'grid', 
-                                                gridTemplateColumns: '2fr 1fr 1fr 1fr 1.5fr',
-                                                padding: '10px 12px',
-                                                borderTop: '1px solid rgba(255,255,255,0.05)',
-                                                alignItems: 'center',
-                                                background: edgePercent >= 0 ? 'rgba(16, 185, 129, 0.05)' : 'rgba(239, 68, 68, 0.05)'
-                                            }}>
-                                                <div style={{ 
-                                                    fontSize: '0.8rem', 
-                                                    color: 'var(--text-primary)',
-                                                    fontWeight: '500',
-                                                    whiteSpace: 'nowrap',
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis'
-                                                }}>{opt.option}</div>
-                                                <div style={{ 
-                                                    textAlign: 'center', 
-                                                    fontFamily: 'Space Mono',
-                                                    fontWeight: '700',
-                                                    color: 'var(--accent-gold)',
-                                                    fontSize: '0.85rem'
-                                                }}>{odds.toFixed(2)}</div>
-                                                <div style={{ 
-                                                    textAlign: 'center', 
-                                                    fontFamily: 'Space Mono',
-                                                    fontSize: '0.85rem',
-                                                    color: 'var(--text-secondary)'
-                                                }}>{Math.round(prob * 100)}%</div>
-                                                <div style={{ 
-                                                    textAlign: 'center', 
-                                                    fontFamily: 'Space Mono',
-                                                    fontWeight: '700',
-                                                    fontSize: '0.9rem',
-                                                    color: verdictColor
-                                                }}>{edgePercent >= 0 ? '+' : ''}{edgePercent}%</div>
-                                                <div style={{ 
-                                                    textAlign: 'center',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    justifyContent: 'center',
-                                                    gap: '4px'
-                                                }}>
-                                                    <span>{verdictIcon}</span>
-                                                    <span style={{ 
-                                                        fontSize: '0.65rem', 
-                                                        fontWeight: '700',
-                                                        color: verdictColor
-                                                    }}>{verdictText}</span>
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                                
-                                {/* Légende */}
-                                <div style={{ 
-                                    marginTop: '12px', 
-                                    padding: '10px',
-                                    background: 'rgba(0,0,0,0.2)',
-                                    borderRadius: '8px',
-                                    display: 'flex',
-                                    flexWrap: 'wrap',
-                                    gap: '12px',
-                                    justifyContent: 'center',
-                                    fontSize: '0.7rem'
-                                }}>
-                                    <span>🟢 EDGE ≥ +6%</span>
-                                    <span>🟡 +3% à +6%</span>
-                                    <span>🟠 0% à +3%</span>
-                                    <span>🔴 -6% à 0%</span>
-                                    <span>⛔ {'<'} -6%</span>
-                                </div>
-                                
-                                {/* Résumé */}
-                                {(() => {
-                                    const valueBets = options.filter(opt => {
-                                        const prob = opt.estimatedProbability || opt.probability || 0;
-                                        const edge = (prob * (opt.odds || 1)) - 1;
-                                        return edge >= 0;
-                                    });
-                                    const excellentBets = options.filter(opt => {
-                                        const prob = opt.estimatedProbability || opt.probability || 0;
-                                        const edge = (prob * (opt.odds || 1)) - 1;
-                                        return edge >= 0.06;
-                                    });
-                                    
-                                    return (
-                                        <div style={{ 
-                                            marginTop: '12px',
-                                            padding: '10px 12px',
-                                            background: valueBets.length > 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                                            borderRadius: '8px',
-                                            textAlign: 'center'
-                                        }}>
-                                            {valueBets.length > 0 ? (
-                                                <div style={{ color: 'var(--accent-green)' }}>
-                                                    ✅ <strong>{valueBets.length}</strong> value bet{valueBets.length > 1 ? 's' : ''} identifié{valueBets.length > 1 ? 's' : ''}
-                                                    {excellentBets.length > 0 && (
-                                                        <span style={{ marginLeft: '8px', color: 'var(--text-muted)' }}>
-                                                            (dont {excellentBets.length} excellent{excellentBets.length > 1 ? 's' : ''} avec EDGE ≥ +6%)
-                                                        </span>
-                                                    )}
-                                                </div>
-                                            ) : (
-                                                <div style={{ color: 'var(--accent-red)' }}>
-                                                    ⚠️ Aucun value bet identifié - Prudence recommandée
-                                                </div>
-                                            )}
-                                        </div>
-                                    );
-                                })()}
-                            </div>
-                        )}
-
                         <h3 className="section-title animate-fade-in delay-2">
                             {isReadOnly ? 'Options sélectionnées ✓' : 'Options recommandées'}
                         </h3>
@@ -2754,49 +2653,7 @@
 
                         {options.map((option, index) => {
                             const prob = option.estimatedProbability || option.probability || 0;
-                            const odds = option.odds || 1;
-                            
-                            // ========== CALCUL DE L'EDGE ==========
-                            // EDGE = (Probabilité × Cote) - 1
-                            // Exemple: prob=0.55, cote=2.00 → EDGE = (0.55 × 2.00) - 1 = 0.10 = +10%
-                            const edge = (prob * odds) - 1;
-                            const edgePercent = Math.round(edge * 1000) / 10; // Arrondi à 1 décimale
-                            
-                            // Déterminer le niveau de dangerosité basé sur l'EDGE
-                            let dangerLevel, dangerColor, dangerIcon, dangerText;
-                            if (edgePercent >= 10) {
-                                dangerLevel = 'excellent';
-                                dangerColor = '#10b981'; // Vert
-                                dangerIcon = '🟢🟢';
-                                dangerText = 'EXCELLENT';
-                            } else if (edgePercent >= 6) {
-                                dangerLevel = 'very_good';
-                                dangerColor = '#22c55e'; // Vert clair
-                                dangerIcon = '🟢';
-                                dangerText = 'TRÈS BON';
-                            } else if (edgePercent >= 3) {
-                                dangerLevel = 'good';
-                                dangerColor = '#eab308'; // Jaune
-                                dangerIcon = '🟡';
-                                dangerText = 'BON';
-                            } else if (edgePercent >= 0) {
-                                dangerLevel = 'low';
-                                dangerColor = '#f97316'; // Orange
-                                dangerIcon = '🟠';
-                                dangerText = 'FAIBLE';
-                            } else if (edgePercent >= -6) {
-                                dangerLevel = 'no_value';
-                                dangerColor = '#ef4444'; // Rouge
-                                dangerIcon = '🔴';
-                                dangerText = 'PAS DE VALUE';
-                            } else {
-                                dangerLevel = 'dangerous';
-                                dangerColor = '#dc2626'; // Rouge foncé
-                                dangerIcon = '⛔';
-                                dangerText = 'DANGEREUX';
-                            }
-                            
-                            const isValueBet = edgePercent >= 0;
+                            const value = option.value || (prob * option.odds);
                             const stakeInfo = stakes?.stakes?.find(s => s.option === option.option);
                             const selected = isSelected(option);
                             
@@ -2808,109 +2665,37 @@
                                     key={option.option}
                                     className={`option-card animate-fade-in delay-${Math.min(index + 2, 5)} ${selected ? 'selected' : ''}`}
                                     onClick={() => toggleOption(option)}
-                                    style={{ 
-                                        cursor: isReadOnly ? 'default' : 'pointer',
-                                        borderLeft: `4px solid ${dangerColor}`,
-                                        background: isValueBet 
-                                            ? 'rgba(16, 185, 129, 0.05)' 
-                                            : 'rgba(239, 68, 68, 0.05)'
-                                    }}
+                                    style={{ cursor: isReadOnly ? 'default' : 'pointer' }}
                                 >
                                     <div className="option-header">
                                         <span className="option-name">{option.option}</span>
-                                        <span className="option-odds" style={{ 
-                                            background: 'var(--accent-gold)',
-                                            padding: '4px 10px',
-                                            borderRadius: '6px',
-                                            fontWeight: '700'
-                                        }}>@{odds.toFixed(2)}</span>
+                                        <span className="option-odds">{option.odds?.toFixed(2) || 'N/A'}</span>
                                     </div>
-                                    
-                                    {/* EDGE et Value Bet */}
-                                    <div style={{ 
-                                        display: 'flex', 
-                                        alignItems: 'center', 
-                                        gap: '12px',
-                                        marginTop: '10px',
-                                        padding: '10px',
-                                        background: 'rgba(0,0,0,0.2)',
-                                        borderRadius: '8px'
-                                    }}>
-                                        {/* EDGE */}
-                                        <div style={{ flex: 1 }}>
-                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
-                                                EDGE (Value)
-                                            </div>
-                                            <div style={{ 
-                                                fontSize: '1.1rem', 
-                                                fontWeight: '700', 
-                                                color: dangerColor,
-                                                fontFamily: 'Space Mono, monospace'
+                                    <div className="option-prob">
+                                        Probabilité: {Math.round(prob * 100)}% • 
+                                        Value: {typeof value === 'number' ? value.toFixed(2) : 'N/A'}
+                                        {option.riskLevel && (
+                                            <span style={{
+                                                marginLeft: '8px',
+                                                padding: '2px 6px',
+                                                borderRadius: '4px',
+                                                fontSize: '0.7rem',
+                                                background: option.riskLevel === 'low' ? 'var(--accent-green)' : 
+                                                           option.riskLevel === 'high' ? 'var(--accent-red)' : 'var(--accent-gold)',
+                                                color: 'white'
                                             }}>
-                                                {edgePercent >= 0 ? '+' : ''}{edgePercent}%
-                                            </div>
-                                        </div>
-                                        
-                                        {/* Probabilité */}
-                                        <div style={{ flex: 1 }}>
-                                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
-                                                Prob. estimée
-                                            </div>
-                                            <div style={{ 
-                                                fontSize: '1rem', 
-                                                fontWeight: '600', 
-                                                color: 'var(--text-primary)',
-                                                fontFamily: 'Space Mono, monospace'
-                                            }}>
-                                                {Math.round(prob * 100)}%
-                                            </div>
-                                        </div>
-                                        
-                                        {/* Niveau de dangerosité */}
-                                        <div style={{ textAlign: 'center' }}>
-                                            <div style={{ 
-                                                fontSize: '1.2rem',
-                                                marginBottom: '2px'
-                                            }}>
-                                                {dangerIcon}
-                                            </div>
-                                            <div style={{ 
-                                                fontSize: '0.65rem', 
-                                                fontWeight: '700',
-                                                color: dangerColor,
-                                                textTransform: 'uppercase'
-                                            }}>
-                                                {dangerText}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    
-                                    {/* Explication du calcul */}
-                                    <div style={{ 
-                                        marginTop: '8px', 
-                                        padding: '8px 10px',
-                                        background: 'rgba(255,255,255,0.03)',
-                                        borderRadius: '6px',
-                                        fontSize: '0.75rem',
-                                        color: 'var(--text-muted)'
-                                    }}>
-                                        <span style={{ color: 'var(--text-secondary)' }}>Calcul:</span> {Math.round(prob * 100)}% × {odds.toFixed(2)} - 1 = <span style={{ color: dangerColor, fontWeight: '600' }}>{edgePercent >= 0 ? '+' : ''}{edgePercent}%</span>
-                                        {isValueBet ? (
-                                            <span style={{ marginLeft: '8px', color: 'var(--accent-green)' }}>✓ Value Bet</span>
-                                        ) : (
-                                            <span style={{ marginLeft: '8px', color: 'var(--accent-red)' }}>✗ Pas de value</span>
+                                                {option.riskLevel === 'low' ? '🟢 Sûr' : option.riskLevel === 'high' ? '🔴 Risqué' : '🟡 Modéré'}
+                                            </span>
                                         )}
                                     </div>
-                                    
                                     {stakeInfo && (
-                                        <div style={{ marginTop: '8px', fontSize: '0.85rem', color: 'var(--accent-gold)', fontWeight: '600' }}>
-                                            💰 Mise recommandée: {(stakeInfo.adjustedStake || stakeInfo.stake)?.toLocaleString()} FCFA
-                                            <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}> → Gain potentiel: {Math.round((stakeInfo.adjustedStake || stakeInfo.stake || 0) * odds).toLocaleString()} FCFA</span>
+                                        <div style={{ marginTop: '8px', fontSize: '0.8rem', color: 'var(--accent-gold)' }}>
+                                            💰 Mise: {(stakeInfo.adjustedStake || stakeInfo.stake)?.toLocaleString()} FCFA
                                         </div>
                                     )}
                                     {option.reasoning && !isReadOnly && (
-                                        <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
-                                            💡 {option.reasoning}
+                                        <div style={{ marginTop: '6px', fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                                            {option.reasoning}
                                         </div>
                                     )}
                                 </div>
@@ -4867,7 +4652,7 @@ ${summary}`,
         const CoverageStrategyPage = () => {
             const { navigate, currentPrediction, selectedOptions, showNotification } = useApp();
             const [selectedStrategy, setSelectedStrategy] = useState(null);
-            const [showCalculations, setShowCalculations] = useState({});
+            const [expandedStrategy, setExpandedStrategy] = useState(null);
             
             const matchInfo = currentPrediction?.match || currentPrediction?.matchInfo || currentPrediction?.meta;
             
@@ -4877,9 +4662,6 @@ ${summary}`,
             const optionsStatus = strategyData?.optionsStatus || [];
             const matchAnalysis = strategyData?.matchAnalysis;
             const recommendedStrategyId = strategyData?.recommendedStrategy;
-            
-            // Fallback pour l'ancien format
-            const isOldFormat = !strategies.length && strategyData?.recommendation;
             
             // Options depuis la stratégie ou fallback
             const strategyOptions = strategyData?.options || [];
@@ -4896,35 +4678,29 @@ ${summary}`,
 
             const handleSelectStrategy = (strategyId) => {
                 setSelectedStrategy(strategyId);
-                showNotification(`Stratégie "${strategyId}" sélectionnée`, "success");
+                showNotification(`Stratégie "${strategyId.toUpperCase()}" sélectionnée`, "success");
             };
 
-            const toggleCalculations = (strategyId) => {
-                setShowCalculations(prev => ({
-                    ...prev,
-                    [strategyId]: !prev[strategyId]
-                }));
+            const toggleExpand = (strategyId) => {
+                setExpandedStrategy(expandedStrategy === strategyId ? null : strategyId);
             };
 
             // Couleur selon le niveau de risque
             const getRiskStyle = (riskLevel, riskScore) => {
-                if (riskLevel === 'low' || riskScore <= 3) {
-                    return { bg: 'rgba(16, 185, 129, 0.15)', color: '#10b981', icon: '🟢' };
-                } else if (riskLevel === 'medium' || riskScore <= 6) {
-                    return { bg: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', icon: '🟡' };
-                } else {
-                    return { bg: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', icon: '🔴' };
-                }
+                const score = riskScore || (riskLevel === 'low' ? 2 : riskLevel === 'high' ? 8 : 5);
+                if (score <= 3) return { bg: 'rgba(16, 185, 129, 0.15)', color: '#10b981', icon: '🟢', text: 'Faible' };
+                if (score <= 6) return { bg: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', icon: '🟡', text: 'Modéré' };
+                return { bg: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', icon: '🔴', text: 'Élevé' };
             };
 
             // Couleur selon le statut
             const getStatusStyle = (status) => {
                 switch(status) {
-                    case 'won': return { bg: 'rgba(16, 185, 129, 0.2)', color: '#10b981', icon: '✅' };
-                    case 'winning': return { bg: 'rgba(16, 185, 129, 0.15)', color: '#22c55e', icon: '📈' };
-                    case 'losing': return { bg: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', icon: '📉' };
-                    case 'lost': return { bg: 'rgba(239, 68, 68, 0.2)', color: '#dc2626', icon: '❌' };
-                    default: return { bg: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', icon: '⏳' };
+                    case 'won': return { bg: 'rgba(16, 185, 129, 0.2)', color: '#10b981', icon: '✅', text: 'GAGNÉ' };
+                    case 'winning': return { bg: 'rgba(16, 185, 129, 0.15)', color: '#22c55e', icon: '📈', text: 'EN BONNE VOIE' };
+                    case 'losing': return { bg: 'rgba(239, 68, 68, 0.15)', color: '#ef4444', icon: '📉', text: 'EN DIFFICULTÉ' };
+                    case 'lost': return { bg: 'rgba(239, 68, 68, 0.2)', color: '#dc2626', icon: '❌', text: 'PERDU' };
+                    default: return { bg: 'rgba(245, 158, 11, 0.15)', color: '#f59e0b', icon: '⏳', text: 'EN COURS' };
                 }
             };
 
@@ -4960,16 +4736,16 @@ ${summary}`,
                         {/* Analyse du match */}
                         {matchAnalysis && (
                             <div className="card animate-fade-in delay-1" style={{ marginBottom: '16px' }}>
-                                <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>📊 Analyse du match</h4>
-                                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
-                                    <p style={{ marginBottom: '8px' }}>🎯 {matchAnalysis.currentSituation}</p>
-                                    <p style={{ marginBottom: '8px' }}>📈 {matchAnalysis.trendsObserved}</p>
+                                <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>📊 Analyse en direct</h4>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                                    <p style={{ marginBottom: '6px' }}>🎯 {matchAnalysis.currentSituation}</p>
+                                    <p style={{ marginBottom: '6px' }}>📈 {matchAnalysis.trendsObserved}</p>
                                     <p style={{ margin: 0 }}>⚠️ {matchAnalysis.riskAssessment}</p>
                                 </div>
                             </div>
                         )}
 
-                        {/* Statut des options */}
+                        {/* Statut des paris */}
                         {optionsStatus.length > 0 && (
                             <div className="card animate-fade-in delay-1" style={{ marginBottom: '16px' }}>
                                 <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>📋 Statut de vos paris</h4>
@@ -4983,28 +4759,27 @@ ${summary}`,
                                             borderRadius: '10px',
                                             borderLeft: `4px solid ${statusStyle.color}`
                                         }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                                                <span style={{ fontWeight: '600', fontSize: '0.95rem' }}>{opt.option}</span>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                                <span style={{ fontWeight: '600', fontSize: '0.9rem' }}>{opt.option}</span>
                                                 <span style={{ 
-                                                    padding: '4px 10px', 
-                                                    background: statusStyle.bg, 
+                                                    padding: '3px 8px', 
+                                                    background: 'rgba(0,0,0,0.2)', 
                                                     color: statusStyle.color,
-                                                    borderRadius: '12px',
-                                                    fontSize: '0.75rem',
+                                                    borderRadius: '10px',
+                                                    fontSize: '0.7rem',
                                                     fontWeight: '600'
                                                 }}>
-                                                    {statusStyle.icon} {opt.status?.toUpperCase()}
+                                                    {statusStyle.icon} {statusStyle.text}
                                                 </span>
                                             </div>
                                             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>{opt.analysis}</p>
                                             {opt.probability !== undefined && (
-                                                <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                    <div style={{ flex: 1, height: '6px', background: 'rgba(0,0,0,0.2)', borderRadius: '3px', overflow: 'hidden' }}>
+                                                <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                    <div style={{ flex: 1, height: '5px', background: 'rgba(0,0,0,0.3)', borderRadius: '3px', overflow: 'hidden' }}>
                                                         <div style={{ 
                                                             width: `${opt.probability * 100}%`, 
                                                             height: '100%', 
-                                                            background: statusStyle.color,
-                                                            borderRadius: '3px'
+                                                            background: statusStyle.color
                                                         }}></div>
                                                     </div>
                                                     <span style={{ fontSize: '0.75rem', fontFamily: 'Space Mono', color: statusStyle.color }}>
@@ -5021,368 +4796,312 @@ ${summary}`,
                         {/* ========== LES 4 STRATÉGIES ========== */}
                         {strategies.length > 0 ? (
                             <>
-                                <h3 className="section-title animate-fade-in delay-2" style={{ marginBottom: '16px' }}>
+                                <h3 className="section-title animate-fade-in delay-2" style={{ marginBottom: '12px' }}>
                                     🎯 Choisissez votre stratégie
                                 </h3>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '16px' }}>
-                                    4 stratégies calculées avec leurs preuves. Cliquez sur une stratégie pour voir les calculs détaillés.
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '16px' }}>
+                                    4 options avec calculs détaillés. Cliquez pour voir les détails.
                                 </p>
 
                                 {strategies.map((strat, idx) => {
                                     const riskStyle = getRiskStyle(strat.riskLevel, strat.riskScore);
                                     const isRecommended = strat.id === recommendedStrategyId || strat.recommended;
                                     const isSelected = selectedStrategy === strat.id;
-                                    const showCalc = showCalculations[strat.id];
+                                    const isExpanded = expandedStrategy === strat.id;
 
                                     return (
                                         <div 
                                             key={strat.id}
                                             className={`card animate-fade-in delay-${Math.min(idx + 2, 5)}`}
                                             style={{ 
-                                                marginBottom: '16px',
+                                                marginBottom: '14px',
                                                 border: isRecommended ? '2px solid var(--accent-gold)' : isSelected ? '2px solid var(--accent-blue)' : '1px solid var(--border-color)',
-                                                position: 'relative',
-                                                overflow: 'hidden'
+                                                position: 'relative'
                                             }}
                                         >
                                             {/* Badge recommandé */}
                                             {isRecommended && (
                                                 <div style={{
                                                     position: 'absolute',
-                                                    top: 0,
-                                                    right: 0,
+                                                    top: '-1px',
+                                                    right: '-1px',
                                                     background: 'var(--accent-gold)',
                                                     color: 'black',
-                                                    padding: '4px 12px',
-                                                    fontSize: '0.7rem',
+                                                    padding: '3px 10px',
+                                                    fontSize: '0.65rem',
                                                     fontWeight: '700',
-                                                    borderBottomLeftRadius: '8px'
+                                                    borderBottomLeftRadius: '8px',
+                                                    borderTopRightRadius: '8px'
                                                 }}>
                                                     ⭐ RECOMMANDÉ
                                                 </div>
                                             )}
 
-                                            {/* En-tête de la stratégie */}
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                                                <div>
-                                                    <h4 style={{ fontSize: '1.1rem', marginBottom: '4px' }}>{strat.name}</h4>
-                                                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', margin: 0 }}>{strat.description}</p>
-                                                </div>
-                                                <div style={{
-                                                    padding: '6px 12px',
-                                                    background: riskStyle.bg,
-                                                    borderRadius: '8px',
-                                                    textAlign: 'center'
-                                                }}>
-                                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Risque</div>
-                                                    <div style={{ fontSize: '0.9rem', fontWeight: '700', color: riskStyle.color }}>
-                                                        {riskStyle.icon} {strat.riskScore}/10
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            {/* Scénarios de profit */}
-                                            <div style={{ 
-                                                display: 'grid', 
-                                                gridTemplateColumns: '1fr 1fr', 
-                                                gap: '10px',
-                                                marginBottom: '12px'
-                                            }}>
-                                                {strat.scenarios?.slice(0, 2).map((scenario, sIdx) => (
-                                                    <div key={sIdx} style={{
-                                                        padding: '10px',
-                                                        background: scenario.profit >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                                                        borderRadius: '8px',
-                                                        borderLeft: `3px solid ${scenario.profit >= 0 ? '#10b981' : '#ef4444'}`
-                                                    }}>
-                                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-                                                            {scenario.name}
-                                                        </div>
-                                                        <div style={{ 
-                                                            fontSize: '1.1rem', 
-                                                            fontWeight: '700',
-                                                            fontFamily: 'Space Mono',
-                                                            color: scenario.profit >= 0 ? '#10b981' : '#ef4444'
-                                                        }}>
-                                                            {scenario.profit >= 0 ? '+' : ''}{scenario.profit?.toLocaleString()} F
-                                                        </div>
-                                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                                                            Prob: {Math.round((scenario.probability || 0) * 100)}%
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
-
-                                            {/* Bouton pour voir les calculs */}
-                                            <button 
-                                                className="btn btn-secondary"
-                                                style={{ width: '100%', marginBottom: '12px', fontSize: '0.85rem' }}
-                                                onClick={() => toggleCalculations(strat.id)}
+                                            {/* En-tête cliquable */}
+                                            <div 
+                                                onClick={() => toggleExpand(strat.id)}
+                                                style={{ cursor: 'pointer' }}
                                             >
-                                                {showCalc ? '🔼 Masquer les calculs' : '🔽 Voir les calculs détaillés'}
-                                            </button>
-
-                                            {/* Calculs détaillés (collapsible) */}
-                                            {showCalc && (
-                                                <div style={{
-                                                    padding: '14px',
-                                                    background: 'rgba(0,0,0,0.3)',
-                                                    borderRadius: '10px',
-                                                    marginBottom: '12px'
-                                                }}>
-                                                    <h5 style={{ marginBottom: '10px', color: 'var(--accent-gold)', fontSize: '0.9rem' }}>
-                                                        📐 Formule & Calculs
-                                                    </h5>
-                                                    
-                                                    {/* Formule */}
-                                                    <div style={{
-                                                        padding: '10px',
-                                                        background: 'rgba(59, 130, 246, 0.1)',
-                                                        borderRadius: '6px',
-                                                        marginBottom: '10px',
-                                                        fontFamily: 'Space Mono',
-                                                        fontSize: '0.8rem',
-                                                        color: 'var(--accent-blue)'
-                                                    }}>
-                                                        {strat.calculations?.formula}
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+                                                    <div style={{ flex: 1 }}>
+                                                        <h4 style={{ fontSize: '1rem', marginBottom: '4px' }}>{strat.name}</h4>
+                                                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', margin: 0 }}>{strat.description}</p>
                                                     </div>
+                                                    <div style={{
+                                                        padding: '5px 10px',
+                                                        background: riskStyle.bg,
+                                                        borderRadius: '8px',
+                                                        textAlign: 'center',
+                                                        marginLeft: '10px'
+                                                    }}>
+                                                        <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>Risque</div>
+                                                        <div style={{ fontSize: '0.85rem', fontWeight: '700', color: riskStyle.color }}>
+                                                            {riskStyle.icon} {strat.riskScore}/10
+                                                        </div>
+                                                    </div>
+                                                </div>
 
-                                                    {/* Détails */}
-                                                    <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                                {/* Scénarios principaux */}
+                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '10px' }}>
+                                                    {strat.scenarios?.slice(0, 2).map((scenario, sIdx) => (
+                                                        <div key={sIdx} style={{
+                                                            padding: '8px 10px',
+                                                            background: scenario.profit >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                                                            borderRadius: '8px',
+                                                            borderLeft: `3px solid ${scenario.profit >= 0 ? '#10b981' : '#ef4444'}`
+                                                        }}>
+                                                            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
+                                                                {scenario.name?.substring(0, 25)}
+                                                            </div>
+                                                            <div style={{ 
+                                                                fontSize: '1rem', 
+                                                                fontWeight: '700',
+                                                                fontFamily: 'Space Mono',
+                                                                color: scenario.profit >= 0 ? '#10b981' : '#ef4444'
+                                                            }}>
+                                                                {scenario.profit >= 0 ? '+' : ''}{(scenario.profit || 0).toLocaleString()} F
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
+
+                                                <div style={{ 
+                                                    textAlign: 'center', 
+                                                    color: 'var(--text-muted)', 
+                                                    fontSize: '0.75rem',
+                                                    padding: '6px',
+                                                    background: 'rgba(255,255,255,0.03)',
+                                                    borderRadius: '6px'
+                                                }}>
+                                                    {isExpanded ? '🔼 Masquer les détails' : '🔽 Voir les calculs détaillés'}
+                                                </div>
+                                            </div>
+
+                                            {/* Détails (collapsible) */}
+                                            {isExpanded && (
+                                                <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-color)' }}>
+                                                    {/* Calculs */}
+                                                    <div style={{
+                                                        padding: '12px',
+                                                        background: 'rgba(0,0,0,0.3)',
+                                                        borderRadius: '8px',
+                                                        marginBottom: '12px'
+                                                    }}>
+                                                        <h5 style={{ marginBottom: '8px', color: 'var(--accent-gold)', fontSize: '0.85rem' }}>
+                                                            📐 Formule & Calculs
+                                                        </h5>
+                                                        
+                                                        <div style={{
+                                                            padding: '8px',
+                                                            background: 'rgba(59, 130, 246, 0.1)',
+                                                            borderRadius: '6px',
+                                                            marginBottom: '8px',
+                                                            fontFamily: 'Space Mono',
+                                                            fontSize: '0.75rem',
+                                                            color: 'var(--accent-blue)'
+                                                        }}>
+                                                            {strat.calculations?.formula}
+                                                        </div>
+
                                                         {strat.calculations?.details?.map((detail, dIdx) => (
                                                             <div key={dIdx} style={{
-                                                                padding: '6px 10px',
+                                                                padding: '5px 8px',
                                                                 background: 'rgba(255,255,255,0.03)',
                                                                 borderRadius: '4px',
-                                                                marginBottom: '6px',
+                                                                marginBottom: '4px',
+                                                                fontSize: '0.8rem',
+                                                                color: 'var(--text-secondary)',
                                                                 borderLeft: '2px solid var(--accent-gold)'
                                                             }}>
                                                                 {detail}
                                                             </div>
                                                         ))}
+
+                                                        {/* Explications des scénarios */}
+                                                        {strat.scenarios?.map((scenario, sIdx) => (
+                                                            <div key={sIdx} style={{
+                                                                marginTop: '8px',
+                                                                padding: '8px',
+                                                                background: 'rgba(255,255,255,0.02)',
+                                                                borderRadius: '6px',
+                                                                fontSize: '0.8rem'
+                                                            }}>
+                                                                <div style={{ fontWeight: '600', marginBottom: '3px', color: scenario.profit >= 0 ? '#10b981' : '#ef4444' }}>
+                                                                    {scenario.name}
+                                                                </div>
+                                                                <div style={{ color: 'var(--text-muted)', fontFamily: 'Space Mono', fontSize: '0.75rem' }}>
+                                                                    {scenario.explanation}
+                                                                </div>
+                                                            </div>
+                                                        ))}
                                                     </div>
 
-                                                    {/* Explications des scénarios */}
-                                                    {strat.scenarios?.map((scenario, sIdx) => (
-                                                        <div key={sIdx} style={{
-                                                            marginTop: '10px',
-                                                            padding: '10px',
-                                                            background: 'rgba(255,255,255,0.02)',
-                                                            borderRadius: '6px'
-                                                        }}>
-                                                            <div style={{ fontWeight: '600', marginBottom: '4px', fontSize: '0.85rem' }}>
-                                                                {scenario.name}
-                                                            </div>
-                                                            <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontFamily: 'Space Mono' }}>
-                                                                {scenario.explanation}
-                                                            </div>
-                                                        </div>
-                                                    ))}
-
-                                                    {/* Valeur attendue */}
-                                                    {strat.calculations?.expectedValue !== undefined && (
+                                                    {/* Actions */}
+                                                    {strat.actions?.length > 0 && (
                                                         <div style={{
-                                                            marginTop: '12px',
                                                             padding: '10px',
-                                                            background: strat.calculations.expectedValue >= 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                                                            borderRadius: '6px',
-                                                            display: 'flex',
-                                                            justifyContent: 'space-between',
-                                                            alignItems: 'center'
+                                                            background: 'rgba(245, 158, 11, 0.1)',
+                                                            borderRadius: '8px',
+                                                            marginBottom: '10px'
                                                         }}>
-                                                            <span style={{ fontSize: '0.85rem' }}>📊 Espérance mathématique:</span>
-                                                            <span style={{ 
-                                                                fontFamily: 'Space Mono', 
-                                                                fontWeight: '700',
-                                                                color: strat.calculations.expectedValue >= 0 ? '#10b981' : '#ef4444'
-                                                            }}>
-                                                                {strat.calculations.expectedValue >= 0 ? '+' : ''}{strat.calculations.expectedValue?.toLocaleString()} FCFA
-                                                            </span>
+                                                            <div style={{ fontWeight: '600', marginBottom: '6px', fontSize: '0.8rem', color: 'var(--accent-gold)' }}>
+                                                                📝 Action à effectuer:
+                                                            </div>
+                                                            {strat.actions.map((action, aIdx) => (
+                                                                <div key={aIdx} style={{
+                                                                    padding: '6px 8px',
+                                                                    background: 'rgba(0,0,0,0.2)',
+                                                                    borderRadius: '4px',
+                                                                    marginBottom: aIdx < strat.actions.length - 1 ? '4px' : 0,
+                                                                    fontSize: '0.8rem'
+                                                                }}>
+                                                                    <strong>{action.action}</strong>: {action.bet || action.option}
+                                                                    {action.amount && (
+                                                                        <span style={{ color: 'var(--accent-gold)', marginLeft: '6px', fontFamily: 'Space Mono' }}>
+                                                                            {action.amount.toLocaleString()} F
+                                                                        </span>
+                                                                    )}
+                                                                    {action.odds && <span style={{ color: 'var(--text-muted)' }}> @{action.odds}</span>}
+                                                                </div>
+                                                            ))}
                                                         </div>
                                                     )}
+
+                                                    {/* Avantages / Inconvénients */}
+                                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '10px' }}>
+                                                        <div style={{ padding: '8px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '6px' }}>
+                                                            <div style={{ fontSize: '0.7rem', fontWeight: '600', color: '#10b981', marginBottom: '4px' }}>✅ Avantages</div>
+                                                            {strat.pros?.slice(0, 2).map((pro, pIdx) => (
+                                                                <div key={pIdx} style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '2px' }}>• {pro}</div>
+                                                            ))}
+                                                        </div>
+                                                        <div style={{ padding: '8px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '6px' }}>
+                                                            <div style={{ fontSize: '0.7rem', fontWeight: '600', color: '#ef4444', marginBottom: '4px' }}>⚠️ Inconvénients</div>
+                                                            {strat.cons?.slice(0, 2).map((con, cIdx) => (
+                                                                <div key={cIdx} style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '2px' }}>• {con}</div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             )}
 
-                                            {/* Actions à effectuer */}
-                                            {strat.actions?.length > 0 && (
-                                                <div style={{
-                                                    padding: '12px',
-                                                    background: 'rgba(245, 158, 11, 0.1)',
-                                                    borderRadius: '8px',
-                                                    marginBottom: '12px'
-                                                }}>
-                                                    <div style={{ fontWeight: '600', marginBottom: '8px', fontSize: '0.85rem', color: 'var(--accent-gold)' }}>
-                                                        📝 Action(s) à effectuer:
-                                                    </div>
-                                                    {strat.actions.map((action, aIdx) => (
-                                                        <div key={aIdx} style={{
-                                                            padding: '8px 10px',
-                                                            background: 'rgba(0,0,0,0.2)',
-                                                            borderRadius: '6px',
-                                                            marginBottom: aIdx < strat.actions.length - 1 ? '6px' : 0,
-                                                            fontSize: '0.85rem'
-                                                        }}>
-                                                            <strong>{action.action}</strong>: {action.bet || action.option}
-                                                            {action.amount && (
-                                                                <span style={{ color: 'var(--accent-gold)', marginLeft: '8px' }}>
-                                                                    {action.amount.toLocaleString()} FCFA
-                                                                </span>
-                                                            )}
-                                                            {action.odds && (
-                                                                <span style={{ color: 'var(--text-muted)', marginLeft: '8px' }}>
-                                                                    @ {action.odds}
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-
-                                            {/* Avantages / Inconvénients */}
-                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
-                                                <div style={{ padding: '10px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px' }}>
-                                                    <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#10b981', marginBottom: '6px' }}>
-                                                        ✅ Avantages
-                                                    </div>
-                                                    {strat.pros?.slice(0, 2).map((pro, pIdx) => (
-                                                        <div key={pIdx} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                                                            • {pro}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                                <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px' }}>
-                                                    <div style={{ fontSize: '0.75rem', fontWeight: '600', color: '#ef4444', marginBottom: '6px' }}>
-                                                        ⚠️ Inconvénients
-                                                    </div>
-                                                    {strat.cons?.slice(0, 2).map((con, cIdx) => (
-                                                        <div key={cIdx} style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                                                            • {con}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            </div>
-
-                                            {/* Résumé */}
+                                            {/* Résumé et bouton */}
                                             <div style={{
-                                                padding: '10px 12px',
+                                                padding: '8px 10px',
                                                 background: 'rgba(255,255,255,0.03)',
                                                 borderRadius: '6px',
-                                                fontSize: '0.85rem',
+                                                fontSize: '0.8rem',
                                                 color: 'var(--text-secondary)',
-                                                fontStyle: 'italic',
-                                                marginBottom: '12px'
+                                                marginBottom: '10px'
                                             }}>
                                                 💡 {strat.summary}
                                             </div>
 
-                                            {/* Bouton sélectionner */}
                                             <button 
                                                 className={`btn ${isSelected ? 'btn-success' : 'btn-primary'}`}
-                                                style={{ width: '100%' }}
-                                                onClick={() => handleSelectStrategy(strat.id)}
+                                                style={{ width: '100%', padding: '10px' }}
+                                                onClick={(e) => { e.stopPropagation(); handleSelectStrategy(strat.id); }}
                                             >
-                                                {isSelected ? '✅ Stratégie sélectionnée' : `Choisir cette stratégie`}
+                                                {isSelected ? '✅ Stratégie sélectionnée' : 'Choisir cette stratégie'}
                                             </button>
                                         </div>
                                     );
                                 })}
 
-                                {/* Explication du choix recommandé */}
+                                {/* Explication de la recommandation */}
                                 {strategyData?.reasoning && (
                                     <div className="card animate-fade-in" style={{
                                         marginBottom: '16px',
                                         background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%)',
                                         border: '1px solid rgba(139, 92, 246, 0.3)'
                                     }}>
-                                        <h4 style={{ marginBottom: '8px', color: '#a78bfa' }}>🧠 Pourquoi cette recommandation ?</h4>
-                                        <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.6' }}>
+                                        <h4 style={{ marginBottom: '8px', color: '#a78bfa', fontSize: '0.9rem' }}>🧠 Pourquoi cette recommandation ?</h4>
+                                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.5' }}>
                                             {strategyData.reasoning}
                                         </p>
                                     </div>
                                 )}
                             </>
-                        ) : isOldFormat ? (
-                            /* Ancien format - affichage simple */
-                            <div className="card animate-fade-in delay-2">
+                        ) : (
+                            /* Ancien format ou pas de stratégies */
+                            <div className="card animate-fade-in" style={{ marginBottom: '16px' }}>
                                 <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>
-                                    Recommandation: {strategyData?.recommendation?.toUpperCase()}
+                                    📊 {strategyData?.recommendation ? `Recommandation: ${strategyData.recommendation.toUpperCase()}` : 'Analyse'}
                                 </h4>
-                                <p style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-line' }}>
-                                    {strategyData?.analysis}
+                                <p style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-line', fontSize: '0.9rem' }}>
+                                    {strategyData?.analysis || "Lancez l'analyse de couverture pour obtenir des stratégies."}
                                 </p>
                                 {strategyData?.summary && (
-                                    <div style={{ 
-                                        marginTop: '12px', 
-                                        padding: '12px', 
-                                        background: 'rgba(16, 185, 129, 0.1)', 
-                                        borderRadius: '8px' 
-                                    }}>
+                                    <div style={{ marginTop: '12px', padding: '10px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px' }}>
                                         💡 {strategyData.summary}
                                     </div>
                                 )}
                             </div>
-                        ) : (
-                            <div className="card animate-fade-in" style={{ textAlign: 'center', padding: '40px 20px' }}>
-                                <div style={{ fontSize: '3rem', marginBottom: '12px' }}>🛡️</div>
-                                <p style={{ color: 'var(--text-muted)' }}>
-                                    Aucune stratégie générée. Retournez à la page de suivi pour générer une stratégie.
-                                </p>
-                            </div>
                         )}
 
-                        {/* Résumé des totaux */}
+                        {/* Résumé de position */}
                         <div className="card animate-fade-in" style={{ marginBottom: '16px' }}>
-                            <h4 style={{ marginBottom: '16px' }}>📊 Résumé de votre position</h4>
-                            
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                                <div style={{ padding: '12px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '8px' }}>
-                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total misé</div>
-                                    <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono' }}>
-                                        {totalStake.toLocaleString()} F
-                                    </div>
+                            <h4 style={{ marginBottom: '12px' }}>📊 Résumé de votre position</h4>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                <div style={{ padding: '10px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '8px' }}>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Total misé</div>
+                                    <div style={{ fontSize: '1.1rem', fontWeight: '700', fontFamily: 'Space Mono' }}>{totalStake.toLocaleString()} F</div>
                                 </div>
-                                <div style={{ padding: '12px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px' }}>
-                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Gain potentiel</div>
-                                    <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#10b981' }}>
-                                        +{totalPotentialProfit.toLocaleString()} F
-                                    </div>
+                                <div style={{ padding: '10px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px' }}>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Gain potentiel</div>
+                                    <div style={{ fontSize: '1.1rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#10b981' }}>+{totalPotentialProfit.toLocaleString()} F</div>
                                 </div>
                                 {totalCashout > 0 && (
-                                    <div style={{ padding: '12px', background: 'rgba(245, 158, 11, 0.1)', borderRadius: '8px' }}>
-                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Cashout dispo</div>
-                                        <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#f59e0b' }}>
-                                            {totalCashout.toLocaleString()} F
-                                        </div>
+                                    <div style={{ padding: '10px', background: 'rgba(245, 158, 11, 0.1)', borderRadius: '8px' }}>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Cashout dispo</div>
+                                        <div style={{ fontSize: '1.1rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#f59e0b' }}>{totalCashout.toLocaleString()} F</div>
                                     </div>
                                 )}
-                                <div style={{ padding: '12px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px' }}>
-                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Perte max</div>
-                                    <div style={{ fontSize: '1.2rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#ef4444' }}>
-                                        -{totalStake.toLocaleString()} F
-                                    </div>
+                                <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px' }}>
+                                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Perte max</div>
+                                    <div style={{ fontSize: '1.1rem', fontWeight: '700', fontFamily: 'Space Mono', color: '#ef4444' }}>-{totalStake.toLocaleString()} F</div>
                                 </div>
                             </div>
                         </div>
 
-                        {/* Note IA */}
+                        {/* Note */}
                         <div className="animate-fade-in" style={{
                             background: 'rgba(139, 92, 246, 0.1)',
                             border: '1px solid rgba(139, 92, 246, 0.3)',
                             borderRadius: '12px',
-                            padding: '16px',
+                            padding: '14px',
                             marginBottom: '16px'
                         }}>
-                            <p style={{ color: '#a78bfa', fontSize: '0.85rem', marginBottom: '8px', fontWeight: '600' }}>
-                                🧠 {strategyData?.isDemo ? 'Analyse Calculée' : `Analyse ${strategyData?.engine || 'IA'}`}
+                            <p style={{ color: '#a78bfa', fontSize: '0.8rem', marginBottom: '6px', fontWeight: '600' }}>
+                                🧠 {strategyData?.isDemo ? 'Analyse calculée' : `Analyse ${strategyData?.engine || 'IA'}`}
                             </p>
-                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', lineHeight: '1.5', margin: 0 }}>
-                                {strategyData?.isDemo 
-                                    ? "Ces stratégies sont calculées mathématiquement. Pour une analyse IA complète avec DeepSeek Reasoner, vérifiez la configuration du serveur."
-                                    : "Ces stratégies combinent analyse IA et calculs mathématiques pour vous offrir les meilleures options de couverture."
-                                }
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', lineHeight: '1.4', margin: 0 }}>
+                                {strategies.length > 0 
+                                    ? "Ces 4 stratégies sont calculées mathématiquement avec leurs scénarios de profit/perte."
+                                    : "Renseignez les cashouts pour obtenir des stratégies de couverture détaillées."}
                             </p>
                             {strategyData?.generatedAt && (
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '8px', marginBottom: 0 }}>
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.65rem', marginTop: '6px', marginBottom: 0 }}>
                                     Générée le {new Date(strategyData.generatedAt).toLocaleString('fr-FR')}
                                 </p>
                             )}
@@ -5392,14 +5111,12 @@ ${summary}`,
                             className="btn btn-success animate-fade-in" 
                             style={{ width: '100%', marginBottom: '20px' }}
                             onClick={() => {
-                                if (selectedStrategy) {
-                                    showNotification(`Stratégie "${selectedStrategy}" appliquée !`, "success");
-                                }
+                                if (selectedStrategy) showNotification(`Stratégie "${selectedStrategy.toUpperCase()}" appliquée !`, "success");
                                 navigate('pronostics');
                             }}
                         >
                             <Icons.Check />
-                            {selectedStrategy ? `Appliquer "${selectedStrategy}" et retourner` : 'Retour aux pronostics'}
+                            {selectedStrategy ? `Appliquer et retourner` : 'Retour aux pronostics'}
                         </button>
                     </main>
                     <BottomNav />
