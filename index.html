@@ -3546,6 +3546,7 @@
         const CashoutPage = () => {
             const { navigate, showNotification, currentPrediction, setCurrentPrediction, selectedOptions: globalSelectedOptions, loading, setLoading, API_BASE_URL, user, goBack, getValidToken, apiCallWithAuth, activePredictions, setActivePredictions } = useApp();
             const [cashouts, setCashouts] = useState({});
+            const [actualStakes, setActualStakes] = useState({}); // Mises réelles de l'utilisateur
             const [liveData, setLiveData] = useState({ score: '0 - 0', minute: '0', stats: {} });
             const [matchStatus, setMatchStatus] = useState(null);
             const [canHedge, setCanHedge] = useState(false);
@@ -3849,18 +3850,29 @@
                 };
             }, [fixtureId, predictionId, autoRefresh]);
 
-            // Initialiser les cashouts à 0 pour chaque option
+            // Initialiser les cashouts et mises réelles pour chaque option
             useEffect(() => {
                 const initialCashouts = {};
+                const initialStakes = {};
                 options.forEach((opt, i) => {
                     initialCashouts[`option_${i}`] = '';
+                    // Pré-remplir avec la mise recommandée par l'IA
+                    initialStakes[`option_${i}`] = opt.adjustedStake || opt.stake || '';
                 });
                 setCashouts(initialCashouts);
+                setActualStakes(initialStakes);
             }, [options.length]);
 
             const handleSubmit = async (withCashouts = true) => {
                 if (!canHedge && matchStatus && !matchStatus.canHedge) {
                     showNotification(statusMessage || "La stratégie de couverture n'est pas encore disponible", "error");
+                    return;
+                }
+
+                // Vérifier que les mises sont renseignées
+                const hasAnyStake = Object.values(actualStakes).some(v => v && v !== '' && parseFloat(v) > 0);
+                if (!hasAnyStake) {
+                    showNotification("Veuillez entrer vos mises réelles pour au moins un pari", "warning");
                     return;
                 }
 
@@ -3874,7 +3886,7 @@
                 
                 setCalculatingStrategy(true);
                 setLoading(true);
-                showNotification("🧠 Calcul de la stratégie de couverture...", "info");
+                showNotification("🧠 Analyse IA en cours (Claude + DeepSeek)...", "info");
                 
                 try {
                     // Obtenir un token frais
@@ -3883,13 +3895,17 @@
                         throw new Error("Session expirée - Reconnectez-vous");
                     }
                     
-                    // Préparer les données de la requête
+                    // Calculer le total des mises réelles
+                    const totalActualStakes = Object.values(actualStakes).reduce((sum, v) => sum + (parseFloat(v) || 0), 0);
+                    
+                    // Préparer les données de la requête avec mises réelles
                     const requestData = {
                         predictionId: currentPrediction?.id,
                         options: options.map((opt, i) => ({
                             option: opt.option,
                             odds: opt.odds,
-                            stake: opt.stake || opt.adjustedStake || 0,
+                            recommendedStake: opt.stake || opt.adjustedStake || 0, // Mise recommandée par l'IA
+                            actualStake: actualStakes[`option_${i}`] ? parseFloat(actualStakes[`option_${i}`]) : (opt.stake || 0), // Mise réelle
                             cashout: withCashouts && cashouts[`option_${i}`] ? parseFloat(cashouts[`option_${i}`]) : null
                         })),
                         liveScore: {
@@ -3897,10 +3913,12 @@
                             away: matchStatus?.score?.away || 0,
                             elapsed: matchStatus?.elapsed || 0
                         },
-                        withCashouts
+                        totalActualStakes,
+                        withCashouts,
+                        matchInfo: currentPrediction?.matchInfo || currentPrediction?.meta
                     };
                     
-                    console.log('📡 Hedging request:', requestData);
+                    console.log('📡 Hedging request with actual stakes:', requestData);
                     
                     const response = await fetch(`${API_BASE_URL}/hedging/strategy`, {
                         method: 'POST',
@@ -4512,19 +4530,24 @@ ${summary}`,
                                     </div>
                                 )}
 
-                                {/* Formulaire de Cashout */}
-                                <h4 style={{ marginBottom: '8px', marginTop: '16px' }}>💰 Entrez vos cashouts</h4>
+                                {/* Formulaire de Mises et Cashouts */}
+                                <h4 style={{ marginBottom: '8px', marginTop: '16px' }}>💰 Vos paris et cashouts</h4>
                                 <p style={{ 
                                     fontSize: '0.75rem', 
                                     color: 'var(--text-muted)', 
                                     marginBottom: '12px',
                                     lineHeight: '1.4'
                                 }}>
-                                    Vous pouvez entrer les valeurs de cashout proposées par votre bookmaker à tout moment. 
-                                    La stratégie sera calculable à partir de la 40ème minute ou à la mi-temps.
+                                    Entrez vos <strong>mises réelles</strong> et les <strong>cashouts proposés</strong> par votre bookmaker. 
+                                    L'IA calculera les meilleures stratégies de couverture.
                                 </p>
                                 {options.map((opt, index) => {
-                                    const stake = opt.adjustedStake || opt.stake || 0;
+                                    const recommendedStake = opt.adjustedStake || opt.stake || 0;
+                                    const actualStake = actualStakes[`option_${index}`] ? parseFloat(actualStakes[`option_${index}`]) : recommendedStake;
+                                    const cashoutValue = cashouts[`option_${index}`] ? parseFloat(cashouts[`option_${index}`]) : 0;
+                                    const potentialReturn = actualStake * (opt.odds || 1.5);
+                                    const potentialProfit = potentialReturn - actualStake;
+                                    
                                     // Trouver l'option évaluée correspondante
                                     const evalOpt = evaluatedOptions.find(e => e.option === opt.option);
                                     const statusBadge = evalOpt?.currentStatus ? (
@@ -4546,34 +4569,125 @@ ${summary}`,
                                     ) : null;
                                     
                                     return (
-                                        <div key={index} className={`input-group animate-fade-in delay-${index + 1}`}>
-                                            <label className="input-label">
-                                                {opt.option}
-                                                {statusBadge}
-                                                <span style={{ float: 'right', color: 'var(--text-muted)', fontWeight: 'normal' }}>
-                                                    Mise: {stake.toLocaleString()} FCFA @ {opt.odds?.toFixed(2)}
+                                        <div key={index} className={`card animate-fade-in delay-${index + 1}`} style={{ marginBottom: '12px', padding: '14px' }}>
+                                            {/* Titre de l'option */}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                                                <div style={{ flex: 1 }}>
+                                                    <span style={{ fontWeight: '600', fontSize: '0.9rem' }}>{opt.option}</span>
+                                                    {statusBadge}
+                                                </div>
+                                                <span style={{ 
+                                                    padding: '3px 8px', 
+                                                    background: 'rgba(245, 158, 11, 0.2)', 
+                                                    borderRadius: '6px',
+                                                    fontFamily: 'Space Mono',
+                                                    fontSize: '0.85rem',
+                                                    color: 'var(--accent-gold)'
+                                                }}>
+                                                    @{(opt.odds || 1.5).toFixed(2)}
                                                 </span>
-                                            </label>
-                                            <input
-                                                type="number"
-                                                className="input"
-                                                placeholder={`Cashout actuel (ex: ${Math.round(stake * 0.9)})`}
-                                                value={cashouts[`option_${index}`] || ''}
-                                                onChange={(e) => setCashouts({...cashouts, [`option_${index}`]: e.target.value})}
-                                            />
-                                            <div style={{ 
-                                                display: 'flex', 
-                                                justifyContent: 'space-between', 
-                                                marginTop: '4px',
-                                                fontSize: '0.75rem',
-                                                color: 'var(--text-muted)'
-                                            }}>
-                                                <span>Gain potentiel: {Math.round(stake * (opt.odds || 1.5)).toLocaleString()} FCFA</span>
-                                                <span>FCFA</span>
                                             </div>
+                                            
+                                            {/* Grille des inputs */}
+                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                                                {/* Mise réelle */}
+                                                <div>
+                                                    <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                                                        💵 Mise réelle (FCFA)
+                                                    </label>
+                                                    <input
+                                                        type="number"
+                                                        className="input"
+                                                        placeholder={`Ex: ${recommendedStake}`}
+                                                        value={actualStakes[`option_${index}`] || ''}
+                                                        onChange={(e) => setActualStakes({...actualStakes, [`option_${index}`]: e.target.value})}
+                                                        style={{ fontSize: '1rem', padding: '10px', fontFamily: 'Space Mono' }}
+                                                    />
+                                                    {recommendedStake > 0 && (
+                                                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                                            Recommandé: {recommendedStake.toLocaleString()} F
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                
+                                                {/* Cashout proposé */}
+                                                <div>
+                                                    <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                                                        🏦 Cashout proposé (FCFA)
+                                                    </label>
+                                                    <input
+                                                        type="number"
+                                                        className="input"
+                                                        placeholder={`Ex: ${Math.round(actualStake * 0.85)}`}
+                                                        value={cashouts[`option_${index}`] || ''}
+                                                        onChange={(e) => setCashouts({...cashouts, [`option_${index}`]: e.target.value})}
+                                                        style={{ fontSize: '1rem', padding: '10px', fontFamily: 'Space Mono' }}
+                                                    />
+                                                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                                        Optionnel
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            
+                                            {/* Résumé des gains/pertes potentiels */}
+                                            {actualStake > 0 && (
+                                                <div style={{ 
+                                                    marginTop: '10px', 
+                                                    padding: '8px', 
+                                                    background: 'rgba(0,0,0,0.2)', 
+                                                    borderRadius: '6px',
+                                                    display: 'grid',
+                                                    gridTemplateColumns: '1fr 1fr 1fr',
+                                                    gap: '8px',
+                                                    fontSize: '0.75rem'
+                                                }}>
+                                                    <div>
+                                                        <div style={{ color: 'var(--text-muted)' }}>Retour si gagné</div>
+                                                        <div style={{ fontFamily: 'Space Mono', color: 'var(--accent-green)', fontWeight: '600' }}>
+                                                            +{Math.round(potentialReturn).toLocaleString()} F
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ color: 'var(--text-muted)' }}>Profit net</div>
+                                                        <div style={{ fontFamily: 'Space Mono', color: 'var(--accent-green)', fontWeight: '600' }}>
+                                                            +{Math.round(potentialProfit).toLocaleString()} F
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ color: 'var(--text-muted)' }}>Si perdu</div>
+                                                        <div style={{ fontFamily: 'Space Mono', color: 'var(--accent-red)', fontWeight: '600' }}>
+                                                            -{Math.round(actualStake).toLocaleString()} F
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     );
                                 })}
+                                
+                                {/* Total des mises */}
+                                {Object.values(actualStakes).some(v => v && parseFloat(v) > 0) && (
+                                    <div style={{ 
+                                        padding: '12px', 
+                                        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%)',
+                                        borderRadius: '10px',
+                                        marginBottom: '16px',
+                                        border: '1px solid rgba(59, 130, 246, 0.3)'
+                                    }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>💰 Total misé:</span>
+                                            <span style={{ fontFamily: 'Space Mono', fontWeight: '700' }}>
+                                                {Object.values(actualStakes).reduce((sum, v) => sum + (parseFloat(v) || 0), 0).toLocaleString()} FCFA
+                                            </span>
+                                        </div>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>📊 Total cashouts:</span>
+                                            <span style={{ fontFamily: 'Space Mono', fontWeight: '700', color: 'var(--accent-gold)' }}>
+                                                {Object.values(cashouts).reduce((sum, v) => sum + (parseFloat(v) || 0), 0).toLocaleString()} FCFA
+                                            </span>
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* Données live */}
                                 <div className="card animate-fade-in" style={{ marginTop: '16px' }}>
@@ -4957,7 +5071,7 @@ ${summary}`,
                                                     </div>
 
                                                     {/* Actions */}
-                                                    {strat.actions?.length > 0 && (
+                                                    {(strat.actions?.length > 0 || strat.hedgeRequired) && (
                                                         <div style={{
                                                             padding: '10px',
                                                             background: 'rgba(245, 158, 11, 0.1)',
@@ -4967,7 +5081,76 @@ ${summary}`,
                                                             <div style={{ fontWeight: '600', marginBottom: '6px', fontSize: '0.8rem', color: 'var(--accent-gold)' }}>
                                                                 📝 Action à effectuer:
                                                             </div>
-                                                            {strat.actions.map((action, aIdx) => (
+                                                            
+                                                            {/* Affichage spécial si hedge requis */}
+                                                            {strat.hedgeRequired && strat.hedgeBet && (
+                                                                <div style={{
+                                                                    padding: '12px',
+                                                                    background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(234, 88, 12, 0.1) 100%)',
+                                                                    borderRadius: '8px',
+                                                                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                                                                    marginBottom: '8px'
+                                                                }}>
+                                                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                                                        🎯 PARI DE COUVERTURE À PLACER:
+                                                                    </div>
+                                                                    <div style={{ 
+                                                                        fontSize: '1rem', 
+                                                                        fontWeight: '700', 
+                                                                        color: 'var(--accent-gold)',
+                                                                        marginBottom: '8px'
+                                                                    }}>
+                                                                        {strat.hedgeBet}
+                                                                    </div>
+                                                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                                                        <div style={{ 
+                                                                            padding: '8px', 
+                                                                            background: 'rgba(0,0,0,0.2)', 
+                                                                            borderRadius: '6px',
+                                                                            textAlign: 'center'
+                                                                        }}>
+                                                                            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>MISE</div>
+                                                                            <div style={{ 
+                                                                                fontSize: '1.1rem', 
+                                                                                fontWeight: '700', 
+                                                                                fontFamily: 'Space Mono',
+                                                                                color: '#f59e0b'
+                                                                            }}>
+                                                                                {(strat.hedgeStake || 0).toLocaleString()} F
+                                                                            </div>
+                                                                        </div>
+                                                                        <div style={{ 
+                                                                            padding: '8px', 
+                                                                            background: 'rgba(0,0,0,0.2)', 
+                                                                            borderRadius: '6px',
+                                                                            textAlign: 'center'
+                                                                        }}>
+                                                                            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>COTE</div>
+                                                                            <div style={{ 
+                                                                                fontSize: '1.1rem', 
+                                                                                fontWeight: '700', 
+                                                                                fontFamily: 'Space Mono',
+                                                                                color: 'var(--accent-blue)'
+                                                                            }}>
+                                                                                @{(strat.hedgeOdds || 2.0).toFixed(2)}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                    {strat.capitalNeeded > 0 && (
+                                                                        <div style={{ 
+                                                                            marginTop: '8px', 
+                                                                            fontSize: '0.75rem', 
+                                                                            color: 'var(--text-muted)',
+                                                                            textAlign: 'center'
+                                                                        }}>
+                                                                            💰 Capital additionnel requis: <strong style={{ color: 'var(--accent-gold)' }}>{strat.capitalNeeded.toLocaleString()} FCFA</strong>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                            
+                                                            {/* Actions classiques (cashout, etc.) */}
+                                                            {strat.actions?.map((action, aIdx) => (
                                                                 <div key={aIdx} style={{
                                                                     padding: '6px 8px',
                                                                     background: 'rgba(0,0,0,0.2)',
