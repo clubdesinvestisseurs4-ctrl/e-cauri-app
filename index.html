@@ -657,6 +657,80 @@
             const [activePredictions, setActivePredictions] = useState([]);
             const [selectedOptions, setSelectedOptions] = useState([]);
             
+            // ========== SYSTÈME DE VERROUILLAGE DES ANALYSES ==========
+            // Empêche les analyses/hedging multiples et persiste l'état
+            const [analysisLock, setAnalysisLock] = useState(null); // { type: 'prediction'|'hedging', id: string, startedAt: timestamp }
+            const [pendingAnalysis, setPendingAnalysis] = useState(null); // Analyse en attente de résultat
+            
+            // Charger le verrou depuis localStorage au démarrage
+            useEffect(() => {
+                try {
+                    const savedLock = localStorage.getItem('ecauri_analysis_lock');
+                    if (savedLock) {
+                        const lock = JSON.parse(savedLock);
+                        // Vérifier si le verrou n'est pas trop vieux (max 10 minutes)
+                        const lockAge = Date.now() - lock.startedAt;
+                        if (lockAge < 10 * 60 * 1000) {
+                            setAnalysisLock(lock);
+                            console.log('🔒 Analyse en cours restaurée:', lock);
+                        } else {
+                            // Verrou expiré, le supprimer
+                            localStorage.removeItem('ecauri_analysis_lock');
+                            console.log('🔓 Verrou expiré, supprimé');
+                        }
+                    }
+                    
+                    // Restaurer les prédictions en cours
+                    const savedPredictions = localStorage.getItem('ecauri_active_predictions');
+                    if (savedPredictions) {
+                        const predictions = JSON.parse(savedPredictions);
+                        setActivePredictions(predictions);
+                        console.log('📋 Prédictions restaurées:', predictions.length);
+                    }
+                } catch (e) {
+                    console.warn('Erreur restauration état:', e);
+                }
+            }, []);
+            
+            // Persister le verrou dans localStorage
+            useEffect(() => {
+                if (analysisLock) {
+                    localStorage.setItem('ecauri_analysis_lock', JSON.stringify(analysisLock));
+                } else {
+                    localStorage.removeItem('ecauri_analysis_lock');
+                }
+            }, [analysisLock]);
+            
+            // Persister les prédictions actives
+            useEffect(() => {
+                if (activePredictions.length > 0) {
+                    localStorage.setItem('ecauri_active_predictions', JSON.stringify(activePredictions));
+                }
+            }, [activePredictions]);
+            
+            // Fonction pour acquérir un verrou
+            const acquireAnalysisLock = (type, id) => {
+                if (analysisLock) {
+                    console.warn('🔒 Verrou déjà actif:', analysisLock);
+                    return false;
+                }
+                const newLock = { type, id, startedAt: Date.now() };
+                setAnalysisLock(newLock);
+                console.log('🔒 Verrou acquis:', newLock);
+                return true;
+            };
+            
+            // Fonction pour libérer le verrou
+            const releaseAnalysisLock = () => {
+                setAnalysisLock(null);
+                console.log('🔓 Verrou libéré');
+            };
+            
+            // Vérifier si une analyse est en cours
+            const isAnalysisInProgress = () => {
+                return analysisLock !== null;
+            };
+            
             // UI state - Loading states améliorés
             const [loading, setLoading] = useState(false);
             const [loadingMessage, setLoadingMessage] = useState('');
@@ -1135,6 +1209,13 @@
 
             // Analyze prediction via API
             const analyzePrediction = async (opportunityId, balance, bookmaker = 'default', stakePercentage = 6) => {
+                // ========== VÉRIFICATION DU VERROUILLAGE ==========
+                if (analysisLock) {
+                    showNotification("⏳ Une analyse est déjà en cours. Veuillez patienter.", "warning");
+                    navigate('pronostics');
+                    return;
+                }
+                
                 // Vérifier le token d'authentification
                 const token = localStorage.getItem('authToken');
                 if (!token) {
@@ -1144,10 +1225,17 @@
                 }
 
                 console.log('🔮 Starting analysis...', { opportunityId, balance, bookmaker, stakePercentage });
+                
+                // ========== ACQUÉRIR LE VERROU ==========
+                const lockId = `prediction_${opportunityId}_${Date.now()}`;
+                if (!acquireAnalysisLock('prediction', lockId)) {
+                    showNotification("⏳ Impossible de lancer l'analyse. Une autre est en cours.", "warning");
+                    return;
+                }
 
                 // 1. Créer immédiatement une prédiction avec statut "analyzing"
                 const tempPrediction = {
-                    id: `temp_${Date.now()}`,
+                    id: `analyzing_${Date.now()}`,
                     matchId: opportunityId,
                     match: selectedMatch,
                     matchInfo: {
@@ -1167,14 +1255,15 @@
                     stakePercentage: stakePercentage,
                     status: 'analyzing',
                     createdAt: new Date().toISOString(),
-                    isAnalyzing: true
+                    isAnalyzing: true,
+                    lockId: lockId // Référence au verrou
                 };
 
                 // Ajouter aux pronostics actifs immédiatement
                 setActivePredictions(prev => [tempPrediction, ...prev.filter(p => p.matchId !== opportunityId)]);
                 
                 // 2. Rediriger immédiatement vers "Pronos en cours"
-                showNotification("🔄 Analyse lancée ! Vous pouvez suivre la progression.", "info");
+                showNotification("🔄 Analyse lancée ! L'IA analyse le match...", "info");
                 navigate('pronostics');
 
                 // 3. Lancer l'analyse en arrière-plan
@@ -1191,7 +1280,7 @@
 
                     if (!response.ok) {
                         const errorData = await response.json().catch(() => ({}));
-                        throw new Error(errorData.error || `Erreur ${response.status}`);
+                        throw new Error(errorData.error || `Erreur serveur ${response.status}`);
                     }
 
                     const data = await response.json();
@@ -1201,14 +1290,15 @@
                         // 4. Mettre à jour la prédiction avec les résultats
                         const completedPrediction = {
                             ...data.prediction,
-                            id: data.prediction.id || tempPrediction.id,
+                            id: data.prediction.id || tempPrediction.id.replace('analyzing_', 'pred_'),
                             matchId: opportunityId,
                             match: selectedMatch,
                             matchInfo: tempPrediction.matchInfo,
-                            status: 'analyzed', // Nouveau statut: analyse terminée, en attente de validation
+                            status: 'analyzed', // Analyse terminée
                             createdAt: tempPrediction.createdAt,
                             analyzedAt: new Date().toISOString(),
-                            isAnalyzing: false
+                            isAnalyzing: false,
+                            isDemo: false
                         };
                         
                         // Remplacer la prédiction temporaire par la complète
@@ -1228,48 +1318,30 @@
                             `${selectedMatch?.homeTeam || 'Match'} vs ${selectedMatch?.awayTeam || ''}`
                         );
                     } else {
-                        throw new Error("Réponse invalide du serveur");
+                        throw new Error("Réponse invalide du serveur - Aucune prédiction retournée");
                     }
                 } catch (error) {
                     console.error('❌ Error analyzing prediction:', error);
                     
-                    // Fallback avec données de démo si erreur
-                    if (error.message.includes('fetch') || error.message.includes('network') || error.message.includes('Erreur')) {
-                        console.log('📦 Using demo data...');
-                        const demoData = generateDemoPrediction(selectedMatch, balance, bookmaker);
-                        
-                        const demoPrediction = {
-                            ...demoData,
-                            id: tempPrediction.id.replace('temp_', 'demo_'),
-                            matchId: opportunityId,
-                            match: selectedMatch,
-                            matchInfo: tempPrediction.matchInfo,
-                            status: 'analyzed',
-                            createdAt: tempPrediction.createdAt,
-                            analyzedAt: new Date().toISOString(),
-                            isAnalyzing: false,
-                            isDemo: true
-                        };
-                        
-                        setActivePredictions(prev => prev.map(p => 
-                            (p.id === tempPrediction.id || p.matchId === opportunityId) 
-                                ? demoPrediction 
-                                : p
-                        ));
-                        
-                        setCurrentPrediction(demoPrediction);
-                        setUserBalance(balance);
-                        
-                        showNotification("✅ Analyse terminée (mode démo)", "info");
-                    } else {
-                        // Marquer comme erreur
-                        setActivePredictions(prev => prev.map(p => 
-                            p.id === tempPrediction.id 
-                                ? { ...p, status: 'error', error: error.message, isAnalyzing: false }
-                                : p
-                        ));
-                        showNotification(`❌ Erreur: ${error.message}`, "error");
-                    }
+                    // ========== PAS DE MODE DEMO - AFFICHER L'ERREUR ==========
+                    // Marquer la prédiction comme en erreur (l'utilisateur peut réessayer)
+                    setActivePredictions(prev => prev.map(p => 
+                        (p.id === tempPrediction.id || p.matchId === opportunityId)
+                            ? { 
+                                ...p, 
+                                status: 'error', 
+                                error: error.message, 
+                                isAnalyzing: false,
+                                canRetry: true, // Permettre de réessayer
+                                errorAt: new Date().toISOString()
+                            }
+                            : p
+                    ));
+                    
+                    showNotification(`❌ Erreur d'analyse: ${error.message}. Vous pouvez réessayer.`, "error");
+                } finally {
+                    // ========== TOUJOURS LIBÉRER LE VERROU ==========
+                    releaseAnalysisLock();
                 }
             };
 
@@ -1378,7 +1450,10 @@
                 loading, setLoading, loadingMessage, setLoadingMessage,
                 notification, showNotification,
                 livePollingActive,
-                API_BASE_URL
+                API_BASE_URL,
+                // Système de verrouillage
+                analysisLock, acquireAnalysisLock, releaseAnalysisLock, isAnalysisInProgress,
+                register
             };
 
             return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
@@ -1827,12 +1902,15 @@
         };
 
         const BalanceInputPage = () => {
-            const { selectedMatch, analyzePrediction, loading, user, requireAuth, showNotification } = useApp();
+            const { selectedMatch, analyzePrediction, loading, user, requireAuth, showNotification, analysisLock, isAnalysisInProgress, navigate } = useApp();
             const [balance, setBalance] = useState('');
             const [bookmaker, setBookmaker] = useState('1xbet');
             const [bookmakers, setBookmakers] = useState({ popular: [], available: [] });
             const [loadingBookmakers, setLoadingBookmakers] = useState(true);
             const [stakePercentage, setStakePercentage] = useState(6); // Pourcentage de mise par défaut
+            
+            // Vérifier si une analyse est déjà en cours
+            const analysisInProgress = isAnalysisInProgress && isAnalysisInProgress();
 
             // Charger les bookmakers disponibles pour ce match
             useEffect(() => {
@@ -1928,6 +2006,34 @@
                 <>
                     <Header showBack={true} title="Votre capital" />
                     <main className="main-content">
+                        {/* Avertissement si une analyse est déjà en cours */}
+                        {analysisInProgress && (
+                            <div className="card animate-fade-in" style={{
+                                background: 'rgba(245, 158, 11, 0.15)',
+                                border: '1px solid rgba(245, 158, 11, 0.4)',
+                                marginBottom: '16px'
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                    <div className="spinner" style={{ width: '24px', height: '24px' }}></div>
+                                    <div>
+                                        <p style={{ fontWeight: '600', color: 'var(--accent-gold)', margin: '0 0 4px' }}>
+                                            ⚠️ Analyse en cours
+                                        </p>
+                                        <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: 0 }}>
+                                            Une analyse est déjà en cours. Veuillez patienter avant d'en lancer une nouvelle.
+                                        </p>
+                                    </div>
+                                </div>
+                                <button 
+                                    className="btn btn-secondary" 
+                                    style={{ width: '100%', marginTop: '12px' }}
+                                    onClick={() => navigate('pronostics')}
+                                >
+                                    Voir les analyses en cours
+                                </button>
+                            </div>
+                        )}
+                        
                         {selectedMatch && (
                             <div className="card animate-fade-in">
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -2120,12 +2226,12 @@
 
                         <button 
                             className="btn btn-primary animate-fade-in delay-3" 
-                            style={{ width: '100%', marginTop: '24px' }}
+                            style={{ width: '100%', marginTop: '24px', opacity: analysisInProgress ? 0.5 : 1 }}
                             onClick={handleSubmit}
-                            disabled={!balance || loading || loadingBookmakers}
+                            disabled={!balance || loading || loadingBookmakers || analysisInProgress}
                         >
-                            {loading ? '🔮 Analyse en cours...' : 'Analyser le match'}
-                            {!loading && <Icons.Zap />}
+                            {loading ? '🔮 Analyse en cours...' : analysisInProgress ? '⏳ Analyse déjà en cours...' : 'Analyser le match'}
+                            {!loading && !analysisInProgress && <Icons.Zap />}
                         </button>
                         
                         {balance && parseInt(balance) > 0 && (
@@ -2845,7 +2951,7 @@
         };
 
         const PronosticsPage = () => {
-            const { activePredictions, navigate, user, requireAuth, setCurrentPrediction, currentPrediction, selectedOptions, setSelectedOptions, fetchUserPredictions, showNotification, livePollingActive, API_BASE_URL, apiCallWithAuth } = useApp();
+            const { activePredictions, setActivePredictions, navigate, user, requireAuth, setCurrentPrediction, currentPrediction, selectedOptions, setSelectedOptions, fetchUserPredictions, showNotification, livePollingActive, API_BASE_URL, apiCallWithAuth, setSelectedMatch, analysisLock } = useApp();
 
             // Fonction pour demander le hedging
             const requestHedging = async (prediction) => {
@@ -3287,13 +3393,26 @@
                                                         borderRadius: '12px',
                                                         textAlign: 'center'
                                                     }}>
-                                                        <div className="loading-spinner" style={{ margin: '0 auto 12px' }}></div>
+                                                        <div className="spinner" style={{ margin: '0 auto 12px', width: '30px', height: '30px' }}></div>
                                                         <p style={{ color: 'var(--accent-blue)', fontWeight: '500', margin: 0 }}>
-                                                            Analyse IA en cours...
+                                                            🧠 Analyse IA en cours...
                                                         </p>
                                                         <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
-                                                            Les résultats seront disponibles sous peu
+                                                            Claude + DeepSeek analysent le match
                                                         </p>
+                                                        <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '4px' }}>
+                                                            ⏱️ Temps estimé: 30-60 secondes
+                                                        </p>
+                                                        <div style={{ 
+                                                            marginTop: '12px',
+                                                            padding: '8px',
+                                                            background: 'rgba(245, 158, 11, 0.1)',
+                                                            borderRadius: '6px',
+                                                            fontSize: '0.75rem',
+                                                            color: 'var(--accent-gold)'
+                                                        }}>
+                                                            ⚠️ Ne fermez pas l'application pendant l'analyse
+                                                        </div>
                                                     </div>
                                                 </div>
                                             )}
@@ -3360,13 +3479,36 @@
                                                         borderRadius: '12px',
                                                         textAlign: 'center'
                                                     }}>
-                                                        <Icons.AlertCircle style={{ color: 'var(--accent-red)', marginBottom: '8px' }} />
+                                                        <div style={{ marginBottom: '8px' }}>
+                                                            <Icons.AlertCircle />
+                                                        </div>
                                                         <p style={{ color: 'var(--accent-red)', fontWeight: '500', margin: '0 0 8px' }}>
                                                             Erreur lors de l'analyse
                                                         </p>
-                                                        <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: 0 }}>
+                                                        <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: '0 0 12px' }}>
                                                             {pred.error || "Une erreur est survenue"}
                                                         </p>
+                                                        {pred.canRetry && (
+                                                            <button 
+                                                                className="btn btn-secondary"
+                                                                style={{ marginTop: '8px' }}
+                                                                onClick={() => {
+                                                                    // Supprimer cette prédiction et permettre une nouvelle analyse
+                                                                    setActivePredictions(prev => prev.filter(p => p.id !== pred.id));
+                                                                    setSelectedMatch(pred.match || { 
+                                                                        id: pred.matchId,
+                                                                        homeTeam: matchInfo.homeTeam,
+                                                                        awayTeam: matchInfo.awayTeam,
+                                                                        league: matchInfo.league,
+                                                                        fixtureId: fixtureId
+                                                                    });
+                                                                    navigate('balance-input');
+                                                                    showNotification("Vous pouvez relancer l'analyse", "info");
+                                                                }}
+                                                            >
+                                                                🔄 Réessayer l'analyse
+                                                            </button>
+                                                        )}
                                                     </div>
                                                 </div>
                                             )}
@@ -3544,7 +3686,7 @@
         };
 
         const CashoutPage = () => {
-            const { navigate, showNotification, currentPrediction, setCurrentPrediction, selectedOptions: globalSelectedOptions, loading, setLoading, API_BASE_URL, user, goBack, getValidToken, apiCallWithAuth, activePredictions, setActivePredictions } = useApp();
+            const { navigate, showNotification, currentPrediction, setCurrentPrediction, selectedOptions: globalSelectedOptions, loading, setLoading, API_BASE_URL, user, goBack, getValidToken, apiCallWithAuth, activePredictions, setActivePredictions, analysisLock, acquireAnalysisLock, releaseAnalysisLock, isAnalysisInProgress } = useApp();
             const [cashouts, setCashouts] = useState({});
             const [actualStakes, setActualStakes] = useState({}); // Mises réelles de l'utilisateur
             const [liveData, setLiveData] = useState({ score: '0 - 0', minute: '0', stats: {} });
@@ -3864,6 +4006,12 @@
             }, [options.length]);
 
             const handleSubmit = async (withCashouts = true) => {
+                // ========== VÉRIFICATION DU VERROUILLAGE ==========
+                if (isAnalysisInProgress()) {
+                    showNotification("⏳ Une analyse est déjà en cours. Veuillez patienter.", "warning");
+                    return;
+                }
+                
                 if (!canHedge && matchStatus && !matchStatus.canHedge) {
                     showNotification(statusMessage || "La stratégie de couverture n'est pas encore disponible", "error");
                     return;
@@ -3882,6 +4030,13 @@
                         showNotification("Entrez au moins un cashout ou cliquez sur 'Stratégie rapide'", "warning");
                         return;
                     }
+                }
+                
+                // ========== ACQUÉRIR LE VERROU ==========
+                const lockId = `hedging_${currentPrediction?.id}_${Date.now()}`;
+                if (!acquireAnalysisLock('hedging', lockId)) {
+                    showNotification("⏳ Impossible de lancer le calcul. Une analyse est en cours.", "warning");
+                    return;
                 }
                 
                 setCalculatingStrategy(true);
@@ -3948,7 +4103,8 @@
                                 hedgingStrategy: data.strategy, 
                                 hedgingStrategyGenerated: true,
                                 hedgingAnalyzed: true,  // VERROUILLAGE
-                                hedgingLiveData: data.liveData || null
+                                hedgingLiveData: data.liveData || null,
+                                isDemo: false
                             };
                             setCurrentPrediction(updatedPrediction);
                             
@@ -3970,111 +4126,20 @@
                         if (firebaseAuth && firebaseAuth.currentUser) {
                             const newToken = await firebaseAuth.currentUser.getIdToken(true);
                             localStorage.setItem('authToken', newToken);
-                            showNotification("Token rafraîchi ! Réessayez.", "info");
+                            showNotification("Token rafraîchi ! Réessayez le calcul.", "info");
                         } else {
-                            // Mode démo si pas de Firebase
-                            throw new Error("Mode démo activé");
+                            throw new Error("Session expirée - Veuillez vous reconnecter");
                         }
                     } else {
-                        throw new Error(data.error || "Erreur lors du calcul");
+                        throw new Error(data.error || "Erreur serveur lors du calcul de stratégie");
                     }
                 } catch (error) {
-                    console.warn("Hedging API error:", error);
-                    // Mode démo - simuler une stratégie intelligente basée sur les données disponibles
-                    console.log("📊 Mode démo - génération d'une stratégie simulée");
-                    
-                    const homeScore = matchStatus?.score?.home || 0;
-                    const awayScore = matchStatus?.score?.away || 0;
-                    const elapsed = matchStatus?.elapsed || 45;
-                    
-                    // Logique de recommandation basée sur le score
-                    let recommendation = "hold";
-                    let summary = "Continuez à suivre le match. Vos paris sont bien positionnés.";
-                    
-                    if (elapsed >= 75) {
-                        // Fin de match proche
-                        if (homeScore !== awayScore) {
-                            recommendation = "secure";
-                            summary = `Score ${homeScore}-${awayScore} à la ${elapsed}'. Pensez à sécuriser vos gains si possible.`;
-                        }
-                    } else if (elapsed >= 60) {
-                        recommendation = "monitor";
-                        summary = `Match en cours (${elapsed}'). Surveillez l'évolution du score avant de prendre une décision.`;
-                    }
-                    
-                    const demoStrategy = {
-                        recommendation,
-                        analysis: `🎯 Analyse à la ${elapsed}' - Score: ${homeScore} - ${awayScore}
-
-📊 Situation actuelle:
-• ${options.length} option(s) en cours de suivi
-• Temps restant estimé: ${90 - elapsed} minutes
-
-💡 Recommandation: ${recommendation === 'hold' ? 'MAINTENIR' : recommendation === 'secure' ? 'SÉCURISER' : 'SURVEILLER'}
-
-${summary}`,
-                        options: options.map((opt, i) => {
-                            const stake = opt.stake || opt.adjustedStake || 1000;
-                            const odds = opt.odds || 1.5;
-                            const cashoutVal = cashouts[`option_${i}`] ? parseFloat(cashouts[`option_${i}`]) : null;
-                            
-                            // Déterminer le statut probable de l'option
-                            let currentStatus = "pending";
-                            let optRecommendation = "hold";
-                            
-                            const optLower = (opt.option || '').toLowerCase();
-                            if (optLower.includes('plus de 2.5') || optLower.includes('over 2.5')) {
-                                if (homeScore + awayScore > 2) currentStatus = "winning";
-                                else if (homeScore + awayScore === 2 && elapsed > 60) currentStatus = "pending";
-                                else if (elapsed > 70 && homeScore + awayScore < 2) currentStatus = "losing";
-                            } else if (optLower.includes('btts') || optLower.includes('deux équipes')) {
-                                if (homeScore > 0 && awayScore > 0) currentStatus = "won";
-                                else if (elapsed > 75 && (homeScore === 0 || awayScore === 0)) currentStatus = "losing";
-                            }
-                            
-                            if (cashoutVal && cashoutVal > stake * 0.9) {
-                                optRecommendation = "consider_cashout";
-                            }
-                            
-                            return {
-                                option: opt.option,
-                                currentStatus,
-                                recommendation: optRecommendation,
-                                stake,
-                                odds,
-                                potentialProfit: Math.round(stake * (odds - 1)),
-                                cashoutValue: cashoutVal,
-                                analysis: cashoutVal 
-                                    ? `Cashout proposé: ${cashoutVal} FCFA (${Math.round(cashoutVal/stake*100)}% de la mise)`
-                                    : "Pas de cashout renseigné"
-                            };
-                        }),
-                        summary,
-                        confidence: 0.7,
-                        isDemo: true,
-                        generatedAt: new Date().toISOString()
-                    };
-                    
-                    setHedgingStrategy(demoStrategy);
-                    // Verrouiller la stratégie
-                    const updatedPrediction = {
-                        ...currentPrediction, 
-                        hedgingStrategy: demoStrategy, 
-                        hedgingStrategyGenerated: true,
-                        hedgingAnalyzed: true  // VERROUILLAGE
-                    };
-                    setCurrentPrediction(updatedPrediction);
-                    
-                    // Mettre à jour aussi dans activePredictions pour la persistance
-                    if (typeof setActivePredictions === 'function' && activePredictions) {
-                        const updatedPreds = activePredictions.map(p => 
-                            p.id === currentPrediction.id ? updatedPrediction : p
-                        );
-                        setActivePredictions(updatedPreds);
-                    }
-                    showNotification("✅ Stratégie générée (mode démo)", "success");
-                    navigate('coverage-strategy');
+                    // ========== PAS DE MODE DEMO - AFFICHER L'ERREUR ==========
+                    console.error("❌ Hedging API error:", error);
+                    showNotification(`❌ Erreur: ${error.message}. Vérifiez votre connexion et réessayez.`, "error");
                 } finally {
+                    // ========== TOUJOURS LIBÉRER LE VERROU ==========
+                    releaseAnalysisLock();
                     setCalculatingStrategy(false);
                     setLoading(false);
                 }
