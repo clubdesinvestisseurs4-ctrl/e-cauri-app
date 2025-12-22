@@ -2256,6 +2256,61 @@
         const StrategyPage = () => {
             const { currentPrediction, selectedMatch, userBalance, selectedOptions, setSelectedOptions, navigate, showNotification, activePredictions, setActivePredictions, API_BASE_URL, apiCallWithAuth } = useApp();
 
+            // État pour les sections "Pourquoi" dépliables
+            const [expandedReasons, setExpandedReasons] = useState({});
+            
+            // Toggle une section "Pourquoi"
+            const toggleReason = (optionName, e) => {
+                e.stopPropagation(); // Éviter de sélectionner l'option
+                setExpandedReasons(prev => ({
+                    ...prev,
+                    [optionName]: !prev[optionName]
+                }));
+            };
+            
+            // Calculer l'Edge: (Probabilité estimée × Cote) - 1
+            const calculateEdge = (probability, odds) => {
+                if (!probability || !odds) return 0;
+                const edge = (probability * odds - 1) * 100;
+                return Math.round(edge * 10) / 10;
+            };
+            
+            // Obtenir la catégorie et couleur de l'Edge
+            const getEdgeCategory = (edge) => {
+                if (edge > 15) {
+                    return { label: '✅ Excellent', color: '#10b981', bg: 'rgba(16, 185, 129, 0.2)', description: 'Fort déséquilibre valeur/risque' };
+                } else if (edge >= 5) {
+                    return { label: '⚠️ Moyen', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.2)', description: 'Opportunité intéressante' };
+                } else if (edge > 0) {
+                    return { label: '🔴 Faible', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.2)', description: 'Pari risqué' };
+                } else {
+                    return { label: '⛔ Négatif', color: '#dc2626', bg: 'rgba(220, 38, 38, 0.3)', description: 'Value négative - déconseillé' };
+                }
+            };
+            
+            // Calcul Kelly optimisé au frontend avec le pourcentage sélectionné
+            const stakePercentage = currentPrediction?.stakePercentage || 6;
+            const maxStakePercentage = stakePercentage / 100; // Convertir en décimal
+            
+            const calculateKellyStake = (probability, odds, balance) => {
+                if (!probability || !odds || !balance) return { stake: 0, kellyPercentage: 0 };
+                
+                const b = odds - 1; // Gain net par unité misée
+                const p = probability;
+                const q = 1 - p;
+                
+                // Formule Kelly: f* = (bp - q) / b
+                let kellyFraction = Math.max(0, (b * p - q) / b);
+                
+                // Limiter au pourcentage max choisi par l'utilisateur
+                kellyFraction = Math.min(kellyFraction, maxStakePercentage);
+                
+                const stake = Math.round(balance * kellyFraction);
+                const kellyPercentage = Math.round(kellyFraction * 100 * 10) / 10;
+                
+                return { stake: stake || Math.round(balance * 0.02), kellyPercentage };
+            };
+
             // Vérifier si les options ont déjà été validées (mode lecture seule)
             const alreadyValidated = currentPrediction?.selectedOptions && currentPrediction.selectedOptions.length > 0;
             const isReadOnly = alreadyValidated || currentPrediction?.status === 'active' || currentPrediction?.status === 'won' || currentPrediction?.status === 'lost';
@@ -2763,6 +2818,21 @@
                             const stakeInfo = stakes?.stakes?.find(s => s.option === option.option);
                             const selected = isSelected(option);
                             
+                            // Calculer l'Edge
+                            const edge = calculateEdge(prob, option.odds);
+                            const edgeCategory = getEdgeCategory(edge);
+                            
+                            // Calculer la mise Kelly au frontend
+                            const kellyResult = calculateKellyStake(prob, option.odds, userBalance);
+                            const displayStake = stakeInfo?.adjustedStake || stakeInfo?.stake || kellyResult.stake;
+                            const displayKelly = stakeInfo?.kellyPercentage || kellyResult.kellyPercentage;
+                            
+                            // Données pour la section "Pourquoi"
+                            const factors = option.factors || option.keyFactors || [];
+                            const stats = option.statistics || option.stats || [];
+                            const conditions = option.conditions || [];
+                            const isExpanded = expandedReasons[option.option];
+                            
                             // En mode lecture seule, n'afficher que les options sélectionnées
                             if (isReadOnly && !selected) return null;
                             
@@ -2773,35 +2843,189 @@
                                     onClick={() => toggleOption(option)}
                                     style={{ cursor: isReadOnly ? 'default' : 'pointer' }}
                                 >
+                                    {/* Header avec nom et cote */}
                                     <div className="option-header">
                                         <span className="option-name">{option.option}</span>
                                         <span className="option-odds">{option.odds?.toFixed(2) || 'N/A'}</span>
                                     </div>
-                                    <div className="option-prob">
-                                        Probabilité: {Math.round(prob * 100)}% • 
-                                        Value: {typeof value === 'number' ? value.toFixed(2) : 'N/A'}
-                                        {option.riskLevel && (
-                                            <span style={{
-                                                marginLeft: '8px',
-                                                padding: '2px 6px',
-                                                borderRadius: '4px',
-                                                fontSize: '0.7rem',
-                                                background: option.riskLevel === 'low' ? 'var(--accent-green)' : 
-                                                           option.riskLevel === 'high' ? 'var(--accent-red)' : 'var(--accent-gold)',
-                                                color: 'white'
-                                            }}>
-                                                {option.riskLevel === 'low' ? '🟢 Sûr' : option.riskLevel === 'high' ? '🔴 Risqué' : '🟡 Modéré'}
-                                            </span>
-                                        )}
-                                    </div>
-                                    {stakeInfo && (
-                                        <div style={{ marginTop: '8px', fontSize: '0.8rem', color: 'var(--accent-gold)' }}>
-                                            💰 Mise: {(stakeInfo.adjustedStake || stakeInfo.stake)?.toLocaleString()} FCFA
+                                    
+                                    {/* Ligne Edge et Probabilité */}
+                                    <div style={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between', 
+                                        alignItems: 'center',
+                                        marginTop: '8px',
+                                        marginBottom: '8px'
+                                    }}>
+                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                            📊 Prob: <strong style={{ color: 'var(--text-primary)' }}>{Math.round(prob * 100)}%</strong>
                                         </div>
+                                        
+                                        {/* Edge Badge avec couleur */}
+                                        <div style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                            padding: '4px 10px',
+                                            borderRadius: '20px',
+                                            background: edgeCategory.bg,
+                                            border: `1px solid ${edgeCategory.color}40`
+                                        }}>
+                                            <span style={{ fontSize: '0.75rem', color: edgeCategory.color, fontWeight: '600' }}>
+                                                {edgeCategory.label}
+                                            </span>
+                                            <span style={{ 
+                                                fontFamily: 'Space Mono', 
+                                                fontSize: '0.85rem', 
+                                                fontWeight: '700',
+                                                color: edgeCategory.color
+                                            }}>
+                                                {edge > 0 ? '+' : ''}{edge}%
+                                            </span>
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Mise conseillée */}
+                                    <div style={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        padding: '8px 10px',
+                                        background: 'rgba(245, 158, 11, 0.1)',
+                                        borderRadius: '8px',
+                                        marginBottom: '8px'
+                                    }}>
+                                        <div>
+                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>💰 Mise conseillée</span>
+                                            <div style={{ fontFamily: 'Space Mono', fontSize: '1rem', color: 'var(--accent-gold)', fontWeight: '700' }}>
+                                                {displayStake.toLocaleString()} F
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'center' }}>
+                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Kelly</span>
+                                            <div style={{ fontFamily: 'Space Mono', fontSize: '0.85rem', color: 'var(--accent-blue)' }}>
+                                                {displayKelly}%
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Gain pot.</span>
+                                            <div style={{ fontFamily: 'Space Mono', fontSize: '0.85rem', color: 'var(--accent-green)' }}>
+                                                +{Math.round(displayStake * (option.odds || 1.5) - displayStake).toLocaleString()} F
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Bouton "Pourquoi cette option?" */}
+                                    {!isReadOnly && (
+                                        <button
+                                            onClick={(e) => toggleReason(option.option, e)}
+                                            style={{
+                                                width: '100%',
+                                                padding: '8px',
+                                                background: isExpanded ? 'rgba(139, 92, 246, 0.2)' : 'rgba(255,255,255,0.05)',
+                                                border: '1px solid rgba(139, 92, 246, 0.3)',
+                                                borderRadius: '6px',
+                                                color: '#a78bfa',
+                                                fontSize: '0.8rem',
+                                                cursor: 'pointer',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                gap: '6px',
+                                                transition: 'all 0.2s ease'
+                                            }}
+                                        >
+                                            🔍 Pourquoi cette option ?
+                                            <span style={{ transform: isExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>▼</span>
+                                        </button>
                                     )}
-                                    {option.reasoning && !isReadOnly && (
-                                        <div style={{ marginTop: '6px', fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                                            {option.reasoning}
+                                    
+                                    {/* Section dépliable "Pourquoi" */}
+                                    {isExpanded && (
+                                        <div style={{
+                                            marginTop: '10px',
+                                            padding: '12px',
+                                            background: 'rgba(139, 92, 246, 0.1)',
+                                            borderRadius: '8px',
+                                            border: '1px solid rgba(139, 92, 246, 0.2)'
+                                        }}>
+                                            {/* Edge explication */}
+                                            <div style={{ marginBottom: '10px' }}>
+                                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                                    📈 Analyse de valeur (Edge)
+                                                </div>
+                                                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.4' }}>
+                                                    Edge de <strong style={{ color: edgeCategory.color }}>{edge}%</strong>: {edgeCategory.description}.
+                                                    {edge > 10 && " Les bookmakers sous-estiment cette probabilité."}
+                                                    {edge < 5 && edge > 0 && " Petite marge, mise conservatrice recommandée."}
+                                                </p>
+                                            </div>
+                                            
+                                            {/* Facteurs clés */}
+                                            {(factors.length > 0 || option.reasoning) && (
+                                                <div style={{ marginBottom: '10px' }}>
+                                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                                        🎯 Facteurs clés
+                                                    </div>
+                                                    {factors.length > 0 ? (
+                                                        <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                                            {factors.slice(0, 3).map((f, i) => (
+                                                                <li key={i} style={{ marginBottom: '4px' }}>{f}</li>
+                                                            ))}
+                                                        </ul>
+                                                    ) : option.reasoning && (
+                                                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0, fontStyle: 'italic' }}>
+                                                            {option.reasoning}
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            )}
+                                            
+                                            {/* Statistiques */}
+                                            {stats.length > 0 && (
+                                                <div style={{ marginBottom: '10px' }}>
+                                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                                        📊 Statistiques déterminantes
+                                                    </div>
+                                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                                        {stats.slice(0, 3).map((stat, i) => (
+                                                            <span key={i} style={{
+                                                                padding: '4px 8px',
+                                                                background: 'rgba(59, 130, 246, 0.2)',
+                                                                borderRadius: '4px',
+                                                                fontSize: '0.75rem',
+                                                                color: 'var(--accent-blue)'
+                                                            }}>
+                                                                {stat}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            
+                                            {/* Conditions spécifiques */}
+                                            {conditions.length > 0 && (
+                                                <div style={{ marginBottom: '10px' }}>
+                                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                                        ⚠️ Conditions spécifiques
+                                                    </div>
+                                                    <p style={{ fontSize: '0.8rem', color: 'var(--accent-gold)', margin: 0 }}>
+                                                        {conditions.join(' • ')}
+                                                    </p>
+                                                </div>
+                                            )}
+                                            
+                                            {/* Logique du modèle */}
+                                            <div style={{ 
+                                                marginTop: '10px', 
+                                                paddingTop: '10px', 
+                                                borderTop: '1px solid rgba(255,255,255,0.1)',
+                                                fontSize: '0.75rem',
+                                                color: 'var(--text-muted)'
+                                            }}>
+                                                🧠 <strong>Logique IA:</strong> Prob ({Math.round(prob * 100)}%) × Cote ({option.odds?.toFixed(2)}) = Value {value?.toFixed(2)}
+                                                {value > 1 && <span style={{ color: 'var(--accent-green)' }}> → Value positive ✓</span>}
+                                            </div>
                                         </div>
                                     )}
                                 </div>
