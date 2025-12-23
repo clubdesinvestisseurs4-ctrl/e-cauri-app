@@ -3301,12 +3301,6 @@
                 navigate('cashout');
             };
 
-            // Fonction pour calculer le break-even (sortir position)
-            const handleBreakEven = (pred) => {
-                setCurrentPrediction({ ...pred, breakEvenMode: true });
-                navigate('cashout');
-            };
-
             const handleViewDetails = (pred) => {
                 // Réinitialiser les options sélectionnées pour charger celles de la prédiction
                 setSelectedOptions([]);
@@ -3856,33 +3850,22 @@
                                                             Détails
                                                         </button>
                                                         
-                                                        {/* Afficher "Couverture" si pas encore analysé, "Sortir position" sinon */}
-                                                        {pred.hedgingAnalyzed ? (
-                                                            <button 
-                                                                className="btn btn-primary"
-                                                                style={{ flex: 1, background: 'linear-gradient(135deg, var(--accent-gold) 0%, #f59e0b 100%)' }}
-                                                                onClick={() => handleBreakEven(pred)}
-                                                                title="Calculer les mises de couverture pour sortir à zéro"
-                                                            >
-                                                                <Icons.DollarSign />
-                                                                Sortir position
-                                                            </button>
-                                                        ) : (
-                                                            <button 
-                                                                className={`btn ${matchStarted ? 'btn-primary' : 'btn-secondary'}`}
-                                                                style={{ 
-                                                                    flex: 1,
-                                                                    opacity: matchStarted ? 1 : 0.6,
-                                                                    cursor: matchStarted ? 'pointer' : 'not-allowed'
-                                                                }}
-                                                                onClick={() => handleHedging(pred)}
-                                                                disabled={!matchStarted}
-                                                                title={matchStarted ? 'Analyser la stratégie de couverture' : 'Disponible après le coup d\'envoi'}
-                                                            >
-                                                                {matchStarted ? <Icons.Shield /> : <Icons.Lock />}
-                                                                {matchStarted ? 'Couverture' : 'En attente'}
-                                                            </button>
-                                                        )}
+                                                        {/* Bouton Couverture - toujours accessible */}
+                                                        <button 
+                                                            className={`btn ${matchStarted ? 'btn-primary' : 'btn-secondary'}`}
+                                                            style={{ 
+                                                                flex: 1,
+                                                                opacity: matchStarted ? 1 : 0.6,
+                                                                cursor: matchStarted ? 'pointer' : 'not-allowed',
+                                                                background: pred.hedgingStrategy ? 'linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%)' : undefined
+                                                            }}
+                                                            onClick={() => handleHedging(pred)}
+                                                            disabled={!matchStarted}
+                                                            title={matchStarted ? (pred.hedgingStrategy ? 'Relancer l\'analyse de couverture' : 'Analyser la stratégie de couverture') : 'Disponible après le coup d\'envoi'}
+                                                        >
+                                                            {matchStarted ? <Icons.Shield /> : <Icons.Lock />}
+                                                            {matchStarted ? (pred.hedgingStrategy ? '🔄 Couverture' : 'Couverture') : 'En attente'}
+                                                        </button>
                                                     </div>
                                                 </>
                                             )}
@@ -3924,62 +3907,9 @@
             const [hedgingStrategy, setHedgingStrategy] = useState(null);
             const [calculatingStrategy, setCalculatingStrategy] = useState(false);
             const [liveOdds, setLiveOdds] = useState({});
-            const [breakEvenMode, setBreakEvenMode] = useState(currentPrediction?.breakEvenMode || false);
-            const [breakEvenBets, setBreakEvenBets] = useState([]);
-            const [breakEvenSummary, setBreakEvenSummary] = useState(null);
-            const [loadingBreakEven, setLoadingBreakEven] = useState(false);
 
-            // Vérifier si une stratégie a déjà été générée
-            const hasExistingStrategy = currentPrediction?.hedgingStrategy || currentPrediction?.hedgingStrategyGenerated || currentPrediction?.hedgingAnalyzed;
-
-            // ========== FONCTION POUR CALCULER BREAK-EVEN ==========
-            const fetchBreakEven = async () => {
-                if (!currentPrediction?.id) return;
-                
-                setLoadingBreakEven(true);
-                try {
-                    const response = await apiCallWithAuth(
-                        `${API_BASE_URL}/hedging/break-even`,
-                        {
-                            method: 'POST',
-                            body: JSON.stringify({ predictionId: currentPrediction.id })
-                        }
-                    );
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        setBreakEvenBets(data.breakEvenBets || []);
-                        setBreakEvenSummary(data.summary || null);
-                        setLiveOdds(data.liveOdds || {});
-                        
-                        if (data.matchStatus) {
-                            setLiveData({
-                                score: `${data.matchStatus.score?.home ?? 0} - ${data.matchStatus.score?.away ?? 0}`,
-                                minute: data.matchStatus.elapsed || '0',
-                                status: data.matchStatus.status
-                            });
-                        }
-                        
-                        showNotification("✅ Calcul break-even terminé", "success");
-                    } else {
-                        const error = await response.json();
-                        showNotification(error.error || "Erreur lors du calcul", "error");
-                    }
-                } catch (error) {
-                    console.error("Break-even error:", error);
-                    showNotification("Erreur lors du calcul du break-even", "error");
-                } finally {
-                    setLoadingBreakEven(false);
-                }
-            };
-
-            // Charger automatiquement le break-even si on est en mode break-even
-            useEffect(() => {
-                if (currentPrediction?.breakEvenMode && !breakEvenBets.length) {
-                    setBreakEvenMode(true);
-                    fetchBreakEven();
-                }
-            }, [currentPrediction?.breakEvenMode]);
+            // Vérifier si une stratégie a déjà été générée (informatif seulement, pas de blocage)
+            const hasExistingStrategy = currentPrediction?.hedgingStrategy || currentPrediction?.hedgingStrategyGenerated;
 
             // Récupérer les options validées depuis PLUSIEURS sources possibles
             const getValidatedOptions = () => {
@@ -4320,13 +4250,12 @@
                         showNotification("✅ Stratégie calculée!", "success");
                         setHedgingStrategy(data.strategy);
                         // Stocker la stratégie dans currentPrediction pour la page suivante
-                        // ET marquer comme hedgingAnalyzed pour verrouiller
                         if (data.strategy) {
                             const updatedPrediction = {
                                 ...currentPrediction, 
                                 hedgingStrategy: data.strategy, 
                                 hedgingStrategyGenerated: true,
-                                hedgingAnalyzed: true,  // VERROUILLAGE
+                                lastHedgingAt: new Date().toISOString(),
                                 hedgingLiveData: data.liveData || null,
                                 isDemo: false
                             };
@@ -4476,271 +4405,39 @@
                                     Retour aux pronostics
                                 </button>
                             </div>
-                        ) : hasExistingStrategy ? (
-                            /* ========== MODE STRATÉGIE DÉJÀ GÉNÉRÉE ========== */
-                            <div className="animate-fade-in">
-                                {/* Bandeau de verrouillage */}
-                                <div style={{
-                                    background: 'rgba(139, 92, 246, 0.1)',
-                                    border: '1px solid rgba(139, 92, 246, 0.3)',
-                                    borderRadius: '12px',
-                                    padding: '16px',
-                                    marginBottom: '16px'
-                                }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                                        <span style={{ fontSize: '1.5rem' }}>🔒</span>
-                                        <h4 style={{ color: '#a78bfa' }}>Stratégie déjà générée</h4>
-                                    </div>
-                                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: '1.5' }}>
-                                        Vous avez déjà généré une stratégie de couverture pour ce match. 
-                                        Consultez les résultats ou utilisez le mode "Sortir des options" pour calculer un break-even.
-                                    </p>
-                                </div>
-
-                                {/* Résumé de la stratégie existante */}
-                                <div className="card" style={{ marginBottom: '16px' }}>
-                                    <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)' }}>📋 Votre stratégie</h4>
-                                    <div style={{ 
-                                        padding: '12px', 
-                                        background: 'rgba(16, 185, 129, 0.1)', 
-                                        borderRadius: '8px',
-                                        marginBottom: '12px'
+                        ) : (
+                            <>
+                                {/* Bandeau info si stratégie existante (pas de blocage) */}
+                                {hasExistingStrategy && (
+                                    <div className="card animate-fade-in" style={{ 
+                                        marginBottom: '16px',
+                                        background: 'rgba(139, 92, 246, 0.1)',
+                                        border: '1px solid rgba(139, 92, 246, 0.3)'
                                     }}>
-                                        <span style={{ fontWeight: '600', color: 'var(--accent-green)' }}>
-                                            Recommandation: {(currentPrediction.hedgingStrategy?.recommendation || 'hold').toUpperCase()}
-                                        </span>
-                                    </div>
-                                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'pre-line' }}>
-                                        {currentPrediction.hedgingStrategy?.summary || currentPrediction.hedgingStrategy?.analysis?.substring(0, 200) || 'Consultez la page de stratégie pour plus de détails.'}
-                                    </p>
-                                </div>
-
-                                {/* Boutons d'action */}
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                    <button 
-                                        className="btn btn-primary"
-                                        style={{ width: '100%' }}
-                                        onClick={() => navigate('coverage-strategy')}
-                                    >
-                                        <Icons.Eye />
-                                        Voir la stratégie complète
-                                    </button>
-
-                                    <button 
-                                        className="btn btn-secondary"
-                                        style={{ 
-                                            width: '100%',
-                                            background: breakEvenMode ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)',
-                                            border: breakEvenMode ? '1px solid rgba(239, 68, 68, 0.5)' : '1px solid rgba(245, 158, 11, 0.5)'
-                                        }}
-                                        onClick={() => {
-                                            if (!breakEvenMode) {
-                                                setBreakEvenMode(true);
-                                                // Récupérer automatiquement les cotes live depuis l'API
-                                                fetchBreakEven();
-                                            } else {
-                                                setBreakEvenMode(false);
-                                                setBreakEvenBets([]);
-                                            }
-                                        }}
-                                        disabled={loadingBreakEven}
-                                    >
-                                        {loadingBreakEven ? (
-                                            <>🔄 Calcul en cours...</>
-                                        ) : (
-                                            <>
-                                                <Icons.Calculator />
-                                                {breakEvenMode ? '❌ Fermer le mode Break-Even' : '🎯 Sortir des options (Break-Even)'}
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
-
-                                {/* ========== MODE BREAK-EVEN ========== */}
-                                {breakEvenMode && (
-                                    <div className="card animate-fade-in" style={{ marginTop: '16px' }}>
-                                        <h4 style={{ marginBottom: '16px', color: 'var(--accent-gold)' }}>
-                                            🎯 Calcul Break-Even (Sortir à 0)
-                                        </h4>
-                                        
-                                        <div style={{
-                                            background: 'rgba(245, 158, 11, 0.1)',
-                                            border: '1px solid rgba(245, 158, 11, 0.3)',
-                                            borderRadius: '8px',
-                                            padding: '12px',
-                                            marginBottom: '16px',
-                                            fontSize: '0.8rem'
-                                        }}>
-                                            <p style={{ color: 'var(--accent-gold)', marginBottom: '8px', fontWeight: '600' }}>
-                                                💡 Comment ça marche ?
-                                            </p>
-                                            <p style={{ color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-                                                Le break-even vous permet de <strong>sortir de vos paris sans perte ni gain</strong>. 
-                                                Placez les mises ci-dessous sur les options opposées pour neutraliser vos positions.
-                                            </p>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                                            <span style={{ fontSize: '1.3rem' }}>📊</span>
+                                            <h4 style={{ color: '#a78bfa', margin: 0 }}>Stratégie précédente disponible</h4>
                                         </div>
-
-                                        {/* Bouton pour récupérer les cotes live */}
-                                        <button
-                                            className="btn btn-primary"
-                                            style={{ width: '100%', marginBottom: '16px' }}
-                                            onClick={fetchBreakEven}
-                                            disabled={loadingBreakEven}
+                                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '12px' }}>
+                                            Dernière recommandation: <strong style={{ color: 'var(--accent-gold)' }}>
+                                                {(currentPrediction?.hedgingStrategy?.recommendedStrategy || currentPrediction?.hedgingStrategy?.recommendation || 'analyse').toUpperCase()}
+                                            </strong>
+                                            {currentPrediction?.lastHedgingAt && (
+                                                <span style={{ marginLeft: '8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                    ({new Date(currentPrediction.lastHedgingAt).toLocaleTimeString('fr-FR')})
+                                                </span>
+                                            )}
+                                        </p>
+                                        <button 
+                                            className="btn btn-secondary"
+                                            style={{ width: '100%', padding: '10px' }}
+                                            onClick={() => navigate('coverage-strategy')}
                                         >
-                                            {loadingBreakEven ? '🔄 Récupération des cotes live...' : '📡 Récupérer les cotes LIVE'}
+                                            <Icons.Eye /> Voir les détails de la stratégie
                                         </button>
-
-                                        {/* Résumé si disponible */}
-                                        {breakEvenSummary && (
-                                            <div style={{
-                                                background: 'rgba(16, 185, 129, 0.1)',
-                                                border: '1px solid rgba(16, 185, 129, 0.3)',
-                                                borderRadius: '8px',
-                                                padding: '12px',
-                                                marginBottom: '16px'
-                                            }}>
-                                                <h5 style={{ marginBottom: '8px', color: 'var(--accent-green)' }}>📊 Résumé</h5>
-                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '0.85rem' }}>
-                                                    <div>
-                                                        <span style={{ color: 'var(--text-muted)' }}>Total investi:</span>
-                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                                                            {breakEvenSummary.totalInvested?.toLocaleString()} FCFA
-                                                        </span>
-                                                    </div>
-                                                    <div>
-                                                        <span style={{ color: 'var(--text-muted)' }}>Couverture requise:</span>
-                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: 'var(--accent-gold)' }}>
-                                                            {breakEvenSummary.totalHedgeRequired?.toLocaleString()} FCFA
-                                                        </span>
-                                                    </div>
-                                                    <div>
-                                                        <span style={{ color: 'var(--text-muted)' }}>Pire scénario:</span>
-                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: breakEvenSummary.worstCaseWithHedge >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
-                                                            {breakEvenSummary.worstCaseWithHedge >= 0 ? '+' : ''}{breakEvenSummary.worstCaseWithHedge?.toLocaleString()} FCFA
-                                                        </span>
-                                                    </div>
-                                                    <div>
-                                                        <span style={{ color: 'var(--text-muted)' }}>Meilleur scénario:</span>
-                                                        <span style={{ marginLeft: '8px', fontWeight: '600', color: 'var(--accent-green)' }}>
-                                                            +{breakEvenSummary.bestCaseWithHedge?.toLocaleString()} FCFA
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                                {!breakEvenSummary.liveOddsAvailable && (
-                                                    <p style={{ color: 'var(--accent-gold)', fontSize: '0.75rem', marginTop: '8px' }}>
-                                                        ⚠️ Cotes live non disponibles - Utilisation de cotes estimées
-                                                    </p>
-                                                )}
-                                            </div>
-                                        )}
-
-                                        {/* Résultats du calcul */}
-                                        {breakEvenBets.length > 0 && (
-                                            <div>
-                                                <h5 style={{ marginBottom: '12px', color: 'var(--text-primary)' }}>
-                                                    📋 Mises de couverture à placer:
-                                                </h5>
-                                                
-                                                {breakEvenBets.map((bet, i) => (
-                                                    <div key={i} style={{
-                                                        background: 'rgba(0,0,0,0.2)',
-                                                        borderRadius: '8px',
-                                                        padding: '12px',
-                                                        marginBottom: '12px',
-                                                        border: bet.error ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid rgba(255,255,255,0.1)'
-                                                    }}>
-                                                        {/* Option originale */}
-                                                        <div style={{ marginBottom: '8px', paddingBottom: '8px', borderBottom: '1px solid var(--border-color)' }}>
-                                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Votre pari:</span>
-                                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                                <span style={{ fontWeight: '500' }}>{bet.originalOption}</span>
-                                                                <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-blue)' }}>
-                                                                    {bet.originalStake?.toLocaleString()} FCFA @{bet.originalOdds?.toFixed(2)}
-                                                                </span>
-                                                            </div>
-                                                        </div>
-                                                        
-                                                        {bet.error ? (
-                                                            <div style={{ color: 'var(--accent-red)', fontSize: '0.85rem' }}>
-                                                                ❌ {bet.error}
-                                                            </div>
-                                                        ) : (
-                                                            <>
-                                                                {/* Pari de couverture */}
-                                                                <div style={{ 
-                                                                    background: 'rgba(245, 158, 11, 0.1)',
-                                                                    borderRadius: '6px',
-                                                                    padding: '10px',
-                                                                    marginBottom: '8px'
-                                                                }}>
-                                                                    <span style={{ color: 'var(--accent-gold)', fontWeight: '600', display: 'block', marginBottom: '4px' }}>
-                                                                        ➡️ Parier sur: {bet.oppositeBet}
-                                                                    </span>
-                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                                        <span style={{ color: 'var(--text-secondary)' }}>Cote live:</span>
-                                                                        <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-gold)' }}>
-                                                                            @{bet.oppositeOdds?.toFixed(2)}
-                                                                        </span>
-                                                                    </div>
-                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
-                                                                        <span style={{ color: 'var(--text-primary)', fontWeight: '600' }}>Mise à placer:</span>
-                                                                        <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-green)', fontWeight: '700', fontSize: '1.1rem' }}>
-                                                                            {bet.hedgeStake?.toLocaleString()} FCFA
-                                                                        </span>
-                                                                    </div>
-                                                                </div>
-                                                                
-                                                                {/* Scénarios */}
-                                                                <div style={{ fontSize: '0.8rem' }}>
-                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)' }}>
-                                                                        <span>Si pari initial gagne:</span>
-                                                                        <span style={{ color: bet.scenarios?.originalWins >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
-                                                                            {bet.scenarios?.originalWins >= 0 ? '+' : ''}{bet.scenarios?.originalWins?.toLocaleString()} FCFA
-                                                                        </span>
-                                                                    </div>
-                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)' }}>
-                                                                        <span>Si couverture gagne:</span>
-                                                                        <span style={{ color: bet.scenarios?.hedgeWins >= 0 ? 'var(--accent-green)' : 'var(--accent-red)' }}>
-                                                                            {bet.scenarios?.hedgeWins >= 0 ? '+' : ''}{bet.scenarios?.hedgeWins?.toLocaleString()} FCFA
-                                                                        </span>
-                                                                    </div>
-                                                                </div>
-                                                            </>
-                                                        )}
-                                                    </div>
-                                                ))}
-                                                
-                                                {/* Bouton pour actualiser */}
-                                                <button
-                                                    className="btn btn-secondary"
-                                                    style={{ width: '100%', marginTop: '8px' }}
-                                                    onClick={fetchBreakEven}
-                                                    disabled={loadingBreakEven}
-                                                >
-                                                    🔄 Actualiser les cotes
-                                                </button>
-                                            </div>
-                                        )}
-
-                                        {/* Message si pas de résultats */}
-                                        {breakEvenBets.length === 0 && !loadingBreakEven && (
-                                            <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>
-                                                <p>Cliquez sur "Récupérer les cotes LIVE" pour calculer les mises de couverture</p>
-                                            </div>
-                                        )}
                                     </div>
                                 )}
 
-                                <button 
-                                    className="btn btn-secondary"
-                                    style={{ width: '100%', marginTop: '16px' }}
-                                    onClick={() => navigate('pronostics')}
-                                >
-                                    ← Retour aux pronostics
-                                </button>
-                            </div>
-                        ) : (
-                            <>
                                 {/* Section Suivi Live des Options */}
                                 {evaluatedOptions.length > 0 && matchStatus?.hasStarted && (
                                     <div className="card animate-fade-in" style={{ 
@@ -5266,26 +4963,29 @@
 
                                                 {/* Scénarios principaux */}
                                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '10px' }}>
-                                                    {strat.scenarios?.slice(0, 2).map((scenario, sIdx) => (
-                                                        <div key={sIdx} style={{
-                                                            padding: '8px 10px',
-                                                            background: scenario.profit >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                                                            borderRadius: '8px',
-                                                            borderLeft: `3px solid ${scenario.profit >= 0 ? '#10b981' : '#ef4444'}`
-                                                        }}>
-                                                            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
-                                                                {scenario.name?.substring(0, 25)}
-                                                            </div>
-                                                            <div style={{ 
-                                                                fontSize: '1rem', 
-                                                                fontWeight: '700',
-                                                                fontFamily: 'Space Mono',
-                                                                color: scenario.profit >= 0 ? '#10b981' : '#ef4444'
+                                                    {strat.scenarios?.slice(0, 2).map((scenario, sIdx) => {
+                                                        const value = scenario.profit ?? scenario.result ?? 0;
+                                                        return (
+                                                            <div key={sIdx} style={{
+                                                                padding: '8px 10px',
+                                                                background: value >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                                                                borderRadius: '8px',
+                                                                borderLeft: `3px solid ${value >= 0 ? '#10b981' : '#ef4444'}`
                                                             }}>
-                                                                {scenario.profit >= 0 ? '+' : ''}{(scenario.profit || 0).toLocaleString()} F
+                                                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
+                                                                    {scenario.name?.substring(0, 25)}
+                                                                </div>
+                                                                <div style={{ 
+                                                                    fontSize: '1rem', 
+                                                                    fontWeight: '700',
+                                                                    fontFamily: 'Space Mono',
+                                                                    color: value >= 0 ? '#10b981' : '#ef4444'
+                                                                }}>
+                                                                    {value >= 0 ? '+' : ''}{value.toLocaleString()} F
+                                                                </div>
                                                             </div>
-                                                        </div>
-                                                    ))}
+                                                        );
+                                                    })}
                                                 </div>
 
                                                 <div style={{ 
@@ -5341,22 +5041,25 @@
                                                         ))}
 
                                                         {/* Explications des scénarios */}
-                                                        {strat.scenarios?.map((scenario, sIdx) => (
-                                                            <div key={sIdx} style={{
-                                                                marginTop: '8px',
-                                                                padding: '8px',
-                                                                background: 'rgba(255,255,255,0.02)',
-                                                                borderRadius: '6px',
-                                                                fontSize: '0.8rem'
-                                                            }}>
-                                                                <div style={{ fontWeight: '600', marginBottom: '3px', color: scenario.profit >= 0 ? '#10b981' : '#ef4444' }}>
-                                                                    {scenario.name}
+                                                        {strat.scenarios?.map((scenario, sIdx) => {
+                                                            const val = scenario.profit ?? scenario.result ?? 0;
+                                                            return (
+                                                                <div key={sIdx} style={{
+                                                                    marginTop: '8px',
+                                                                    padding: '8px',
+                                                                    background: 'rgba(255,255,255,0.02)',
+                                                                    borderRadius: '6px',
+                                                                    fontSize: '0.8rem'
+                                                                }}>
+                                                                    <div style={{ fontWeight: '600', marginBottom: '3px', color: val >= 0 ? '#10b981' : '#ef4444' }}>
+                                                                        {scenario.name} ({val >= 0 ? '+' : ''}{val.toLocaleString()} F)
+                                                                    </div>
+                                                                    <div style={{ color: 'var(--text-muted)', fontFamily: 'Space Mono', fontSize: '0.75rem' }}>
+                                                                        {scenario.explanation}
+                                                                    </div>
                                                                 </div>
-                                                                <div style={{ color: 'var(--text-muted)', fontFamily: 'Space Mono', fontSize: '0.75rem' }}>
-                                                                    {scenario.explanation}
-                                                                </div>
-                                                            </div>
-                                                        ))}
+                                                            );
+                                                        })}
                                                     </div>
 
                                                     {/* Actions */}
