@@ -1408,18 +1408,7 @@
                         coverageScore: 0.75,
                         valueScore: 0.82
                     },
-                    stakes: {
-                        totalBudget: Math.round(balance * 0.06),
-                        maxBudgetAllowed: Math.round(balance * 0.06),
-                        stakes: [
-                            { option: `Victoire ${homeTeam}`, odds: 1.45, adjustedStake: Math.round(balance * 0.025), potentialReturn: Math.round(balance * 0.025 * 1.45), kellyPercentage: 2.5 },
-                            { option: "Plus de 2.5 buts", odds: 1.70, adjustedStake: Math.round(balance * 0.02), potentialReturn: Math.round(balance * 0.02 * 1.70), kellyPercentage: 2.0 },
-                            { option: "BTTS Oui", odds: 1.85, adjustedStake: Math.round(balance * 0.015), potentialReturn: Math.round(balance * 0.015 * 1.85), kellyPercentage: 1.5 }
-                        ],
-                        totalStake: Math.round(balance * 0.06),
-                        expectedValue: Math.round(balance * 0.06 * 0.15),
-                        riskLevel: "medium"
-                    },
+                    stakes: null, // Stakes calculées au frontend maintenant
                     selectedBookmaker: {
                         key: bookmaker,
                         name: bookmaker.charAt(0).toUpperCase() + bookmaker.slice(1),
@@ -2308,7 +2297,8 @@
                 const stake = Math.round(balance * kellyFraction);
                 const kellyPercentage = Math.round(kellyFraction * 100 * 10) / 10;
                 
-                return { stake: stake || Math.round(balance * 0.02), kellyPercentage };
+                // Fallback: utiliser 1/3 du pourcentage max si Kelly donne 0
+                return { stake: stake || Math.round(balance * maxStakePercentage / 3), kellyPercentage };
             };
 
             // Vérifier si les options ont déjà été validées (mode lecture seule)
@@ -2333,21 +2323,16 @@
                     return;
                 }
 
-                // Chercher dans stakes.stakes
-                const stakeInfo = stakes?.stakes?.find(s => s.option === option.option);
-                
-                // Calculer la stake si non disponible
+                // Calculer la stake avec Kelly et le pourcentage choisi
                 const prob = option.estimatedProbability || option.probability || 0.5;
                 const odds = option.odds || 1.5;
-                let stake = stakeInfo?.adjustedStake || stakeInfo?.stake || 0;
                 
-                if (stake === 0 && userBalance > 0) {
-                    const b = odds - 1;
-                    const q = 1 - prob;
-                    let kellyFraction = Math.max(0, (prob * b - q) / b);
-                    kellyFraction = Math.min(kellyFraction, 0.05);
-                    stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * 0.02);
-                }
+                // Calcul Kelly avec le pourcentage max choisi par l'utilisateur
+                const b = odds - 1;
+                const q = 1 - prob;
+                let kellyFraction = Math.max(0, (prob * b - q) / b);
+                kellyFraction = Math.min(kellyFraction, maxStakePercentage);
+                const stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * maxStakePercentage / 3);
                 
                 const optionWithStake = {
                     option: option.option,
@@ -2356,10 +2341,10 @@
                     adjustedStake: stake,
                     potentialReturn: Math.round(stake * odds),
                     probability: prob,
-                    kellyPercentage: stakeInfo?.kellyPercentage || Math.round((stake / userBalance) * 100 * 10) / 10
+                    kellyPercentage: Math.round(kellyFraction * 100 * 10) / 10
                 };
 
-                console.log('🔄 Toggle option:', optionWithStake);
+                console.log('🔄 Toggle option:', optionWithStake, `(max ${stakePercentage}%)`);
 
                 setSelectedOptions(prev => {
                     const exists = prev.find(o => o.option === option.option);
@@ -2731,46 +2716,17 @@
                                     className="btn btn-secondary"
                                     style={{ padding: '6px 12px', fontSize: '0.75rem' }}
                                     onClick={() => {
-                                        // Calculer les stakes si non disponibles
-                                        let stakesList = stakes?.stakes || [];
-                                        
-                                        if (stakesList.length === 0 && userBalance > 0) {
-                                            const maxBudget = Math.round(userBalance * 0.06);
-                                            stakesList = options.slice(0, 3).map((opt, idx) => {
-                                                const prob = opt.estimatedProbability || opt.probability || 0.5;
-                                                const odds = opt.odds || 1.5;
-                                                const b = odds - 1;
-                                                const q = 1 - prob;
-                                                let kellyFraction = Math.max(0, (prob * b - q) / b);
-                                                kellyFraction = Math.min(kellyFraction, 0.05);
-                                                const stake = Math.round(userBalance * kellyFraction) || Math.round(maxBudget / options.length);
-                                                
-                                                return {
-                                                    option: opt.option,
-                                                    odds: odds,
-                                                    adjustedStake: stake,
-                                                    stake: stake,
-                                                    potentialReturn: Math.round(stake * odds),
-                                                    kellyPercentage: Math.round(kellyFraction * 100 * 10) / 10
-                                                };
-                                            });
-                                        }
-                                        
-                                        // Sélectionner toutes les options avec leurs stakes
+                                        // Calculer les stakes pour toutes les options avec Kelly et le pourcentage choisi
                                         const allOptions = options.map(opt => {
-                                            const stakeInfo = stakesList.find(s => s.option === opt.option);
                                             const prob = opt.estimatedProbability || opt.probability || 0.5;
                                             const odds = opt.odds || 1.5;
                                             
-                                            // Calculer la stake si non trouvée
-                                            let stake = stakeInfo?.adjustedStake || stakeInfo?.stake || 0;
-                                            if (stake === 0 && userBalance > 0) {
-                                                const b = odds - 1;
-                                                const q = 1 - prob;
-                                                let kellyFraction = Math.max(0, (prob * b - q) / b);
-                                                kellyFraction = Math.min(kellyFraction, 0.05);
-                                                stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * 0.02);
-                                            }
+                                            // Calcul Kelly avec le pourcentage max choisi
+                                            const b = odds - 1;
+                                            const q = 1 - prob;
+                                            let kellyFraction = Math.max(0, (prob * b - q) / b);
+                                            kellyFraction = Math.min(kellyFraction, maxStakePercentage);
+                                            const stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * maxStakePercentage / 3);
                                             
                                             return {
                                                 option: opt.option,
@@ -2778,14 +2734,14 @@
                                                 stake: stake,
                                                 adjustedStake: stake,
                                                 potentialReturn: Math.round(stake * odds),
-                                                kellyPercentage: stakeInfo?.kellyPercentage || Math.round((stake / userBalance) * 100 * 10) / 10,
+                                                kellyPercentage: Math.round(kellyFraction * 100 * 10) / 10,
                                                 probability: prob
                                             };
                                         });
                                         
-                                        console.log('📤 All options selected with stakes:', allOptions);
+                                        console.log(`📤 All options selected with stakes (max ${stakePercentage}%):`, allOptions);
                                         setSelectedOptions(allOptions);
-                                        showNotification(`${allOptions.length} options sélectionnées avec mises calculées`, "success");
+                                        showNotification(`${allOptions.length} options sélectionnées (${stakePercentage}% max)`, "success");
                                     }}
                                 >
                                     ✅ Tout sélectionner
@@ -3034,25 +2990,24 @@
 
                         {/* Mises recommandées */}
                         {(() => {
-                            // Calculer les stakes avec fallback
-                            let stakesList = stakes?.stakes || [];
+                            // Calculer les stakes avec Kelly et le pourcentage choisi
+                            let stakesList = [];
                             
-                            // Si pas de stakes mais des options, calculer les stakes
-                            if (stakesList.length === 0 && options.length > 0 && userBalance > 0) {
-                                console.log('📊 Calculating stakes from options...');
-                                const maxBudget = Math.round(userBalance * 0.06);
+                            // Calculer les stakes pour toutes les options recommandées
+                            if (options.length > 0 && userBalance > 0) {
+                                console.log(`📊 Calculating stakes from options (${stakePercentage}% max)...`);
                                 
                                 stakesList = options.slice(0, 3).map((opt, idx) => {
                                     const prob = opt.estimatedProbability || opt.probability || 0.5;
                                     const odds = opt.odds || 1.5;
                                     
-                                    // Kelly simplifié
+                                    // Kelly avec le pourcentage max choisi
                                     const b = odds - 1;
                                     const q = 1 - prob;
                                     let kellyFraction = Math.max(0, (prob * b - q) / b);
-                                    kellyFraction = Math.min(kellyFraction, 0.05);
+                                    kellyFraction = Math.min(kellyFraction, maxStakePercentage);
                                     
-                                    const stake = Math.round(userBalance * kellyFraction) || Math.round(maxBudget / options.length);
+                                    const stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * maxStakePercentage / 3);
                                     
                                     return {
                                         option: opt.option,
@@ -3067,11 +3022,10 @@
                                 console.log('📊 Calculated stakes:', stakesList);
                             }
                             
-                            const totalBudget = stakes?.totalBudget || stakes?.totalStake || 
-                                stakesList.reduce((sum, s) => sum + (s.adjustedStake || s.stake || 0), 0) ||
-                                Math.round((userBalance || 0) * 0.06);
+                            const totalBudget = stakesList.reduce((sum, s) => sum + (s.adjustedStake || s.stake || 0), 0) ||
+                                Math.round((userBalance || 0) * maxStakePercentage);
                             
-                            console.log('📊 Stakes debug:', { stakesFromPred: stakes?.stakes?.length, calculatedStakes: stakesList.length, totalBudget, userBalance });
+                            console.log('📊 Stakes debug:', { stakePercentage, maxStakePercentage, calculatedStakes: stakesList.length, totalBudget, userBalance });
                             
                             if (stakesList.length === 0 && options.length === 0) return null;
                             
@@ -3911,6 +3865,9 @@
             // Vérifier si une stratégie a déjà été générée (informatif seulement, pas de blocage)
             const hasExistingStrategy = currentPrediction?.hedgingStrategy || currentPrediction?.hedgingStrategyGenerated;
 
+            // Récupérer le pourcentage de mise de la prédiction
+            const predStakePercentage = currentPrediction?.stakePercentage || 6;
+
             // Récupérer les options validées depuis PLUSIEURS sources possibles
             const getValidatedOptions = () => {
                 // 1. selectedOptions (source principale)
@@ -3934,7 +3891,7 @@
                 if (currentPrediction?.oddsAnalysis?.recommendedOptions?.length > 0) {
                     console.log('📋 Cashout: Options from oddsAnalysis.recommendedOptions');
                     const totalBudget = currentPrediction?.userBalance || 10000;
-                    const stakePerOption = Math.round(totalBudget * 0.05); // 5% par option
+                    const stakePerOption = Math.round(totalBudget * predStakePercentage / 100); // Utiliser le % choisi
                     return currentPrediction.oddsAnalysis.recommendedOptions.map(opt => ({
                         option: opt.option,
                         odds: opt.odds,
