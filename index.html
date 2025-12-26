@@ -2464,76 +2464,194 @@
                 );
             }
 
-            // Adapter aux deux structures possibles (claude ou chatgpt pour rétrocompatibilité)
-            const analysis = currentPrediction.matchAnalysis?.claude || currentPrediction.matchAnalysis?.chatgpt || currentPrediction.aiAnalysis?.claude;
-            const deepseekAnalysis = currentPrediction.matchAnalysis?.deepseek;
+            // Adapter aux différentes structures possibles 
+            // Backend sauvegarde matchAnalysis sous aiAnalysis
+            const getAnalysisData = () => {
+                // Essayer plusieurs chemins possibles
+                const paths = [
+                    currentPrediction.matchAnalysis?.claude,
+                    currentPrediction.aiAnalysis?.claude,
+                    currentPrediction.matchAnalysis?.deepseek,
+                    currentPrediction.aiAnalysis?.deepseek,
+                    currentPrediction.aiAnalysis, // Si aiAnalysis EST directement l'objet claude
+                    currentPrediction.matchAnalysis
+                ];
+                
+                for (const path of paths) {
+                    if (path && (path.winner || path.btts || path.totalGoals)) {
+                        console.log('📊 Found valid analysis data');
+                        return path;
+                    }
+                }
+                
+                console.log('⚠️ No valid analysis data found in:', {
+                    matchAnalysisKeys: currentPrediction.matchAnalysis ? Object.keys(currentPrediction.matchAnalysis) : 'null',
+                    aiAnalysisKeys: currentPrediction.aiAnalysis ? Object.keys(currentPrediction.aiAnalysis) : 'null'
+                });
+                return null;
+            };
+            
+            const analysis = getAnalysisData();
+            const deepseekAnalysis = currentPrediction.matchAnalysis?.deepseek || currentPrediction.aiAnalysis?.deepseek;
             
             // Chercher les options dans plusieurs sources possibles
             const getRecommendedOptions = () => {
+                console.log('🔍 Looking for options in currentPrediction:', {
+                    hasOddsAnalysis: !!currentPrediction.oddsAnalysis,
+                    hasRecommendedOptions: !!currentPrediction.oddsAnalysis?.recommendedOptions,
+                    recommendedOptionsLength: currentPrediction.oddsAnalysis?.recommendedOptions?.length,
+                    hasRawResponse: !!currentPrediction.oddsAnalysis?.rawResponse,
+                    hasAiAnalysis: !!currentPrediction.aiAnalysis,
+                    hasMatchAnalysis: !!currentPrediction.matchAnalysis,
+                    analysisKeys: analysis ? Object.keys(analysis) : 'null'
+                });
+                
                 // 1. oddsAnalysis.recommendedOptions (source principale)
                 if (currentPrediction.oddsAnalysis?.recommendedOptions?.length > 0) {
                     console.log('📋 Options from oddsAnalysis.recommendedOptions');
                     return currentPrediction.oddsAnalysis.recommendedOptions;
                 }
                 
-                // 2. stakes.stakes (si les options sont là)
-                if (stakes?.stakes?.length > 0) {
-                    console.log('📋 Options from stakes.stakes');
-                    return stakes.stakes.map(s => ({
-                        option: s.option,
-                        odds: s.odds,
-                        estimatedProbability: s.probability || 0.5,
-                        riskLevel: s.riskLevel || 'medium',
-                        value: (s.probability || 0.5) * (s.odds || 1)
-                    }));
+                // 1.5 Essayer de parser rawResponse si present dans oddsAnalysis
+                if (currentPrediction.oddsAnalysis?.rawResponse) {
+                    console.log('📋 Trying to parse rawResponse from oddsAnalysis');
+                    try {
+                        const raw = currentPrediction.oddsAnalysis.rawResponse;
+                        // Nettoyer et parser
+                        const cleanJson = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+                        const parsed = JSON.parse(cleanJson);
+                        if (parsed.recommendedOptions?.length > 0) {
+                            console.log('📋 Successfully parsed recommendedOptions from rawResponse');
+                            return parsed.recommendedOptions;
+                        }
+                    } catch (e) {
+                        console.log('⚠️ Failed to parse rawResponse:', e.message);
+                    }
                 }
                 
-                // 3. Générer des options par défaut basées sur l'analyse IA
+                // 2. Chercher dans synthesis si elle contient des options
+                if (currentPrediction.synthesis?.recommendedOptions?.length > 0) {
+                    console.log('📋 Options from synthesis.recommendedOptions');
+                    return currentPrediction.synthesis.recommendedOptions;
+                }
+                
+                // 3. Générer des options basées sur l'analyse IA
+                const homeTeam = currentPrediction.matchInfo?.homeTeam || currentPrediction.meta?.homeTeam || 'Équipe Domicile';
+                const awayTeam = currentPrediction.matchInfo?.awayTeam || currentPrediction.meta?.awayTeam || 'Équipe Extérieur';
+                
                 if (analysis) {
-                    console.log('📋 Generating options from AI analysis');
-                    const homeTeam = currentPrediction.matchInfo?.homeTeam || currentPrediction.meta?.homeTeam || 'Équipe A';
+                    console.log('📋 Generating options from AI analysis, keys:', Object.keys(analysis));
                     const generatedOptions = [];
                     
-                    // Option victoire
-                    if (analysis.winner) {
-                        const winProb = analysis.winner.teamA?.probability || 0.5;
+                    // Option victoire domicile
+                    const winProb = analysis.winner?.teamA?.probability || 
+                                   analysis.winner?.home?.probability || 
+                                   (analysis.winner?.prediction === 'teamA' ? 0.55 : 0);
+                    if (winProb > 0.3) {
                         generatedOptions.push({
                             option: `Victoire ${homeTeam}`,
-                            odds: winProb > 0 ? Math.round((1 / winProb) * 100) / 100 : 1.50,
+                            odds: winProb > 0 ? Math.round((1 / winProb) * 100) / 100 : 1.60,
                             estimatedProbability: winProb,
-                            riskLevel: winProb > 0.6 ? 'low' : winProb > 0.4 ? 'medium' : 'high'
+                            riskLevel: winProb > 0.6 ? 'low' : winProb > 0.4 ? 'medium' : 'high',
+                            reasoning: analysis.winner?.teamA?.analysis || `Probabilité: ${Math.round(winProb * 100)}%`
+                        });
+                    }
+                    
+                    // Option victoire extérieur
+                    const awayProb = analysis.winner?.teamB?.probability || 
+                                    analysis.winner?.away?.probability || 0;
+                    if (awayProb > 0.3) {
+                        generatedOptions.push({
+                            option: `Victoire ${awayTeam}`,
+                            odds: awayProb > 0 ? Math.round((1 / awayProb) * 100) / 100 : 2.20,
+                            estimatedProbability: awayProb,
+                            riskLevel: awayProb > 0.5 ? 'low' : 'medium',
+                            reasoning: analysis.winner?.teamB?.analysis || `Probabilité: ${Math.round(awayProb * 100)}%`
+                        });
+                    }
+                    
+                    // Option match nul
+                    const drawProb = analysis.winner?.draw?.probability || 0;
+                    if (drawProb > 0.2) {
+                        generatedOptions.push({
+                            option: 'Match Nul',
+                            odds: drawProb > 0 ? Math.round((1 / drawProb) * 100) / 100 : 3.20,
+                            estimatedProbability: drawProb,
+                            riskLevel: 'medium',
+                            reasoning: analysis.winner?.draw?.analysis || `Probabilité: ${Math.round(drawProb * 100)}%`
                         });
                     }
                     
                     // Option BTTS
-                    if (analysis.btts) {
-                        const bttsProb = analysis.btts.probability || 0.5;
+                    const bttsProb = analysis.btts?.probability || 0;
+                    if (bttsProb > 0.4) {
                         generatedOptions.push({
                             option: 'BTTS Oui',
                             odds: bttsProb > 0 ? Math.round((1 / bttsProb) * 100) / 100 : 1.80,
                             estimatedProbability: bttsProb,
-                            riskLevel: 'medium'
+                            riskLevel: 'medium',
+                            reasoning: analysis.btts?.analysis || `Les deux équipes marquent: ${Math.round(bttsProb * 100)}%`
                         });
                     }
                     
                     // Option Over 2.5
-                    if (analysis.totalGoals?.over25) {
-                        const overProb = analysis.totalGoals.over25;
+                    const over25Prob = analysis.totalGoals?.over25 || 0;
+                    if (over25Prob > 0.4) {
                         generatedOptions.push({
                             option: 'Plus de 2.5 buts',
-                            odds: overProb > 0 ? Math.round((1 / overProb) * 100) / 100 : 1.70,
-                            estimatedProbability: overProb,
-                            riskLevel: 'medium'
+                            odds: over25Prob > 0 ? Math.round((1 / over25Prob) * 100) / 100 : 1.70,
+                            estimatedProbability: over25Prob,
+                            riskLevel: 'medium',
+                            reasoning: analysis.totalGoals?.analysis || `Buts attendus: ${analysis.totalGoals?.expected || 'N/A'}`
+                        });
+                    }
+                    
+                    // Option Over 1.5 (plus sûr)
+                    const over15Prob = analysis.totalGoals?.over15 || 0;
+                    if (over15Prob > 0.6) {
+                        generatedOptions.push({
+                            option: 'Plus de 1.5 buts',
+                            odds: over15Prob > 0 ? Math.round((1 / over15Prob) * 100) / 100 : 1.30,
+                            estimatedProbability: over15Prob,
+                            riskLevel: 'low',
+                            reasoning: `Option sûre: ${Math.round(over15Prob * 100)}%`
                         });
                     }
                     
                     if (generatedOptions.length > 0) {
+                        console.log(`📋 Generated ${generatedOptions.length} options from analysis`);
                         return generatedOptions;
                     }
                 }
                 
-                console.log('⚠️ No options found');
-                return [];
+                // 4. FALLBACK FINAL: Options génériques basées sur les infos du match
+                console.log('📋 Using FALLBACK generic options (no AI data found)');
+                return [
+                    {
+                        option: `Victoire ${homeTeam}`,
+                        odds: 1.75,
+                        estimatedProbability: 0.50,
+                        riskLevel: 'medium',
+                        reasoning: '⚠️ Option par défaut - données IA non disponibles',
+                        isFallback: true
+                    },
+                    {
+                        option: 'Plus de 1.5 buts',
+                        odds: 1.35,
+                        estimatedProbability: 0.72,
+                        riskLevel: 'low',
+                        reasoning: '⚠️ Option sûre par défaut',
+                        isFallback: true
+                    },
+                    {
+                        option: 'BTTS Oui',
+                        odds: 1.85,
+                        estimatedProbability: 0.52,
+                        riskLevel: 'medium',
+                        reasoning: '⚠️ Option par défaut - données IA non disponibles',
+                        isFallback: true
+                    }
+                ];
             };
             
             const options = getRecommendedOptions();
