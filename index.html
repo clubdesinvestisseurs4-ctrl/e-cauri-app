@@ -2257,6 +2257,15 @@
                 }));
             };
             
+            // ========== NOUVEAU WORKFLOW: CAPITAL ALLOUÉ ==========
+            // Phase 1: Pourcentage choisi par l'utilisateur (ex: 5%)
+            const stakePercentage = currentPrediction?.stakePercentage || 6;
+            
+            // Phase 2: Capital alloué = Pourcentage × Capital total
+            const allocatedCapital = Math.round(userBalance * stakePercentage / 100);
+            
+            console.log(`💰 Capital alloué: ${stakePercentage}% de ${userBalance} = ${allocatedCapital} FCFA`);
+            
             // Calculer l'Edge: (Probabilité estimée × Cote) - 1
             const calculateEdge = (probability, odds) => {
                 if (!probability || !odds) return 0;
@@ -2277,12 +2286,10 @@
                 }
             };
             
-            // Calcul Kelly optimisé au frontend avec le pourcentage sélectionné
-            const stakePercentage = currentPrediction?.stakePercentage || 6;
-            const maxStakePercentage = stakePercentage / 100; // Convertir en décimal
-            
-            const calculateKellyStake = (probability, odds, balance) => {
-                if (!probability || !odds || !balance) return { stake: 0, kellyPercentage: 0 };
+            // ========== CALCUL KELLY AVEC CAPITAL ALLOUÉ ==========
+            // Calcule la mise Kelly pour une option en utilisant le capital ALLOUÉ (pas le total)
+            const calculateKellyStake = (probability, odds, capital) => {
+                if (!probability || !odds || !capital) return { stake: 0, kellyPercentage: 0, kellyRaw: 0 };
                 
                 const b = odds - 1; // Gain net par unité misée
                 const p = probability;
@@ -2291,14 +2298,52 @@
                 // Formule Kelly: f* = (bp - q) / b
                 let kellyFraction = Math.max(0, (b * p - q) / b);
                 
-                // Limiter au pourcentage max choisi par l'utilisateur
-                kellyFraction = Math.min(kellyFraction, maxStakePercentage);
+                // Kelly brut (avant limitation) pour l'affichage
+                const kellyRaw = Math.round(kellyFraction * 100 * 10) / 10;
                 
-                const stake = Math.round(balance * kellyFraction);
+                // Limiter à 100% du capital alloué max
+                kellyFraction = Math.min(kellyFraction, 1);
+                
+                const stake = Math.round(capital * kellyFraction);
                 const kellyPercentage = Math.round(kellyFraction * 100 * 10) / 10;
                 
-                // Fallback: utiliser 1/3 du pourcentage max si Kelly donne 0
-                return { stake: stake || Math.round(balance * maxStakePercentage / 3), kellyPercentage };
+                return { 
+                    stake: stake || Math.round(capital / 3), // Fallback: 1/3 du capital alloué
+                    kellyPercentage,
+                    kellyRaw 
+                };
+            };
+            
+            // ========== RECALCUL DYNAMIQUE DES MISES ==========
+            // Recalcule les mises pour toutes les options sélectionnées
+            // Répartit le capital alloué proportionnellement selon Kelly
+            const recalculateStakes = (options) => {
+                if (options.length === 0) return [];
+                
+                // 1. Calculer le Kelly brut pour chaque option
+                const optionsWithKelly = options.map(opt => {
+                    const prob = opt.probability || opt.estimatedProbability || 0.5;
+                    const odds = opt.odds || 1.5;
+                    const { kellyRaw } = calculateKellyStake(prob, odds, allocatedCapital);
+                    return { ...opt, kellyRaw, probability: prob, odds };
+                });
+                
+                // 2. Calculer la somme des Kelly pour normaliser
+                const totalKelly = optionsWithKelly.reduce((sum, opt) => sum + Math.max(opt.kellyRaw, 1), 0);
+                
+                // 3. Répartir le capital alloué proportionnellement
+                return optionsWithKelly.map(opt => {
+                    const kellyWeight = Math.max(opt.kellyRaw, 1) / totalKelly;
+                    const stake = Math.round(allocatedCapital * kellyWeight);
+                    
+                    return {
+                        ...opt,
+                        stake,
+                        adjustedStake: stake,
+                        potentialReturn: Math.round(stake * opt.odds),
+                        kellyPercentage: Math.round(kellyWeight * 100 * 10) / 10
+                    };
+                });
             };
 
             // Vérifier si les options ont déjà été validées (mode lecture seule)
@@ -2312,10 +2357,26 @@
                     setSelectedOptions(currentPrediction.selectedOptions);
                 }
             }, [currentPrediction?.id]);
+            
+            // ========== RECALCUL AUTOMATIQUE QUAND SÉLECTION CHANGE ==========
+            // Recalculer les mises à chaque changement de sélection
+            const [calculatedOptions, setCalculatedOptions] = useState([]);
+            
+            useEffect(() => {
+                if (selectedOptions.length > 0 && !isReadOnly) {
+                    const recalculated = recalculateStakes(selectedOptions);
+                    setCalculatedOptions(recalculated);
+                    console.log(`📊 Mises recalculées pour ${recalculated.length} options:`, 
+                        recalculated.map(o => `${o.option}: ${o.stake} FCFA (${o.kellyPercentage}%)`));
+                } else {
+                    setCalculatedOptions([]);
+                }
+            }, [selectedOptions, allocatedCapital]);
 
             // Récupérer les stakes pour fusionner avec les options
             const stakes = currentPrediction?.stakes;
 
+            // ========== TOGGLE OPTION SIMPLIFIÉ ==========
             const toggleOption = (option) => {
                 // Bloquer si en mode lecture seule
                 if (isReadOnly) {
@@ -2323,35 +2384,30 @@
                     return;
                 }
 
-                // Calculer la stake avec Kelly et le pourcentage choisi
                 const prob = option.estimatedProbability || option.probability || 0.5;
                 const odds = option.odds || 1.5;
                 
-                // Calcul Kelly avec le pourcentage max choisi par l'utilisateur
-                const b = odds - 1;
-                const q = 1 - prob;
-                let kellyFraction = Math.max(0, (prob * b - q) / b);
-                kellyFraction = Math.min(kellyFraction, maxStakePercentage);
-                const stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * maxStakePercentage / 3);
-                
-                const optionWithStake = {
+                // Créer l'option avec les infos de base (les mises seront calculées par recalculateStakes)
+                const optionData = {
                     option: option.option,
                     odds: odds,
-                    stake: stake,
-                    adjustedStake: stake,
-                    potentialReturn: Math.round(stake * odds),
                     probability: prob,
-                    kellyPercentage: Math.round(kellyFraction * 100 * 10) / 10
+                    stake: 0, // Sera calculé
+                    adjustedStake: 0,
+                    potentialReturn: 0,
+                    kellyPercentage: 0
                 };
 
-                console.log('🔄 Toggle option:', optionWithStake, `(max ${stakePercentage}%)`);
+                console.log('🔄 Toggle option:', option.option);
 
                 setSelectedOptions(prev => {
                     const exists = prev.find(o => o.option === option.option);
                     if (exists) {
+                        // Désélectionner
                         return prev.filter(o => o.option !== option.option);
                     } else {
-                        return [...prev, optionWithStake];
+                        // Sélectionner
+                        return [...prev, optionData];
                     }
                 });
             };
@@ -2376,22 +2432,11 @@
                     return;
                 }
                 
-                // S'assurer que chaque option a les infos de stake correctes
-                const stakesList = stakes?.stakes || [];
-                const optionsWithStakes = selectedOptions.map(opt => {
-                    const stakeInfo = stakesList.find(s => s.option === opt.option);
-                    return {
-                        option: opt.option,
-                        odds: opt.odds || stakeInfo?.odds || 0,
-                        stake: opt.stake || opt.adjustedStake || stakeInfo?.adjustedStake || stakeInfo?.stake || 0,
-                        adjustedStake: opt.adjustedStake || stakeInfo?.adjustedStake || stakeInfo?.stake || 0,
-                        potentialReturn: opt.potentialReturn || stakeInfo?.potentialReturn || 
-                            ((opt.stake || stakeInfo?.adjustedStake || 0) * (opt.odds || stakeInfo?.odds || 1)),
-                        kellyPercentage: opt.kellyPercentage || stakeInfo?.kellyPercentage
-                    };
-                });
+                // Utiliser les options avec mises calculées dynamiquement
+                const optionsWithStakes = calculatedOptions.length > 0 ? calculatedOptions : recalculateStakes(selectedOptions);
                 
-                console.log('📤 Validating options with stakes:', optionsWithStakes);
+                const totalStake = optionsWithStakes.reduce((sum, o) => sum + (o.stake || 0), 0);
+                console.log(`📤 Validating ${optionsWithStakes.length} options, total: ${totalStake} FCFA sur ${allocatedCapital} FCFA alloués`);
                 
                 // Sauvegarder sur Firebase
                 if (currentPrediction?.id) {
@@ -2400,11 +2445,13 @@
                         const predictionData = {
                             matchInfo: currentPrediction.matchInfo,
                             userBalance: currentPrediction.userBalance,
+                            stakePercentage: stakePercentage,
+                            allocatedCapital: allocatedCapital,
                             bookmaker: currentPrediction.bookmaker,
                             aiAnalysis: currentPrediction.aiAnalysis,
                             oddsAnalysis: currentPrediction.oddsAnalysis,
                             synthesis: currentPrediction.synthesis,
-                            stakes: currentPrediction.stakes,
+                            stakes: null, // Calculées au frontend
                             opportunityId: currentPrediction.opportunityId || currentPrediction.matchId
                         };
                         
@@ -2825,6 +2872,34 @@
                         <h3 className="section-title animate-fade-in delay-2">
                             {isReadOnly ? 'Options sélectionnées ✓' : 'Options recommandées'}
                         </h3>
+                        
+                        {/* Bandeau Capital Alloué */}
+                        {!isReadOnly && (
+                            <div style={{ 
+                                background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(59, 130, 246, 0.15) 100%)',
+                                border: '1px solid rgba(139, 92, 246, 0.3)',
+                                borderRadius: '12px',
+                                padding: '12px 16px',
+                                marginBottom: '16px',
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center'
+                            }}>
+                                <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>💰 Capital alloué ({stakePercentage}%)</div>
+                                    <div style={{ fontSize: '1.2rem', fontWeight: '700', color: 'var(--accent-purple)' }}>
+                                        {allocatedCapital.toLocaleString()} FCFA
+                                    </div>
+                                </div>
+                                <div style={{ textAlign: 'right' }}>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Sur capital total</div>
+                                    <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                                        {userBalance?.toLocaleString()} FCFA
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        
                         {!isReadOnly && options.length > 0 && (
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                                 <p className="section-subtitle" style={{ margin: 0 }}>
@@ -2834,32 +2909,20 @@
                                     className="btn btn-secondary"
                                     style={{ padding: '6px 12px', fontSize: '0.75rem' }}
                                     onClick={() => {
-                                        // Calculer les stakes pour toutes les options avec Kelly et le pourcentage choisi
-                                        const allOptions = options.map(opt => {
-                                            const prob = opt.estimatedProbability || opt.probability || 0.5;
-                                            const odds = opt.odds || 1.5;
-                                            
-                                            // Calcul Kelly avec le pourcentage max choisi
-                                            const b = odds - 1;
-                                            const q = 1 - prob;
-                                            let kellyFraction = Math.max(0, (prob * b - q) / b);
-                                            kellyFraction = Math.min(kellyFraction, maxStakePercentage);
-                                            const stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * maxStakePercentage / 3);
-                                            
-                                            return {
-                                                option: opt.option,
-                                                odds: odds,
-                                                stake: stake,
-                                                adjustedStake: stake,
-                                                potentialReturn: Math.round(stake * odds),
-                                                kellyPercentage: Math.round(kellyFraction * 100 * 10) / 10,
-                                                probability: prob
-                                            };
-                                        });
+                                        // Sélectionner toutes les options (les mises seront calculées automatiquement)
+                                        const allOptions = options.map(opt => ({
+                                            option: opt.option,
+                                            odds: opt.odds || 1.5,
+                                            probability: opt.estimatedProbability || opt.probability || 0.5,
+                                            stake: 0, // Calculé par recalculateStakes
+                                            adjustedStake: 0,
+                                            potentialReturn: 0,
+                                            kellyPercentage: 0
+                                        }));
                                         
-                                        console.log(`📤 All options selected with stakes (max ${stakePercentage}%):`, allOptions);
+                                        console.log(`📤 All ${allOptions.length} options selected`);
                                         setSelectedOptions(allOptions);
-                                        showNotification(`${allOptions.length} options sélectionnées (${stakePercentage}% max)`, "success");
+                                        showNotification(`${allOptions.length} options sélectionnées`, "success");
                                     }}
                                 >
                                     ✅ Tout sélectionner
@@ -2889,17 +2952,19 @@
                         {options.map((option, index) => {
                             const prob = option.estimatedProbability || option.probability || 0;
                             const value = option.value || (prob * option.odds);
-                            const stakeInfo = stakes?.stakes?.find(s => s.option === option.option);
                             const selected = isSelected(option);
+                            
+                            // Récupérer la mise calculée dynamiquement si l'option est sélectionnée
+                            const calcOption = calculatedOptions.find(o => o.option === option.option);
                             
                             // Calculer l'Edge
                             const edge = calculateEdge(prob, option.odds);
                             const edgeCategory = getEdgeCategory(edge);
                             
-                            // Calculer la mise Kelly au frontend
-                            const kellyResult = calculateKellyStake(prob, option.odds, userBalance);
-                            const displayStake = stakeInfo?.adjustedStake || stakeInfo?.stake || kellyResult.stake;
-                            const displayKelly = stakeInfo?.kellyPercentage || kellyResult.kellyPercentage;
+                            // Mise à afficher: soit calculée (si sélectionnée), soit estimation Kelly
+                            const kellyResult = calculateKellyStake(prob, option.odds, allocatedCapital);
+                            const displayStake = selected && calcOption ? calcOption.stake : kellyResult.stake;
+                            const displayKelly = selected && calcOption ? calcOption.kellyPercentage : kellyResult.kellyPercentage;
                             
                             // Données pour la section "Pourquoi"
                             const factors = option.factors || option.keyFactors || [];
@@ -2923,7 +2988,7 @@
                                         <span className="option-odds">{option.odds?.toFixed(2) || 'N/A'}</span>
                                     </div>
                                     
-                                    {/* Ligne Edge et Probabilité */}
+                                    {/* Ligne Confiance IA et Edge */}
                                     <div style={{ 
                                         display: 'flex', 
                                         justifyContent: 'space-between', 
@@ -2931,8 +2996,14 @@
                                         marginTop: '8px',
                                         marginBottom: '8px'
                                     }}>
-                                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                                            📊 Prob: <strong style={{ color: 'var(--text-primary)' }}>{Math.round(prob * 100)}%</strong>
+                                        <div style={{ 
+                                            padding: '4px 10px',
+                                            borderRadius: '20px',
+                                            background: 'rgba(139, 92, 246, 0.15)',
+                                            border: '1px solid rgba(139, 92, 246, 0.3)'
+                                        }}>
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>🤖 Confiance IA </span>
+                                            <strong style={{ color: 'var(--accent-purple)', fontFamily: 'Space Mono' }}>{Math.round(prob * 100)}%</strong>
                                         </div>
                                         
                                         {/* Edge Badge avec couleur */}
@@ -2959,24 +3030,27 @@
                                         </div>
                                     </div>
                                     
-                                    {/* Mise conseillée */}
+                                    {/* Mise calculée (dynamique si sélectionnée) */}
                                     <div style={{ 
                                         display: 'flex', 
                                         justifyContent: 'space-between',
                                         alignItems: 'center',
                                         padding: '8px 10px',
-                                        background: 'rgba(245, 158, 11, 0.1)',
+                                        background: selected ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.1)',
                                         borderRadius: '8px',
-                                        marginBottom: '8px'
+                                        marginBottom: '8px',
+                                        border: selected ? '1px solid rgba(16, 185, 129, 0.3)' : 'none'
                                     }}>
                                         <div>
-                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>💰 Mise conseillée</span>
-                                            <div style={{ fontFamily: 'Space Mono', fontSize: '1rem', color: 'var(--accent-gold)', fontWeight: '700' }}>
+                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                                {selected ? '✅ Mise allouée' : '💰 Mise estimée'}
+                                            </span>
+                                            <div style={{ fontFamily: 'Space Mono', fontSize: '1rem', color: selected ? 'var(--accent-green)' : 'var(--accent-gold)', fontWeight: '700' }}>
                                                 {displayStake.toLocaleString()} F
                                             </div>
                                         </div>
                                         <div style={{ textAlign: 'center' }}>
-                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Kelly</span>
+                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Répart.</span>
                                             <div style={{ fontFamily: 'Space Mono', fontSize: '0.85rem', color: 'var(--accent-blue)' }}>
                                                 {displayKelly}%
                                             </div>
@@ -3106,118 +3180,114 @@
                             );
                         })}
 
-                        {/* Mises recommandées */}
-                        {(() => {
-                            // Calculer les stakes avec Kelly et le pourcentage choisi
-                            let stakesList = [];
-                            
-                            // Calculer les stakes pour toutes les options recommandées
-                            if (options.length > 0 && userBalance > 0) {
-                                console.log(`📊 Calculating stakes from options (${stakePercentage}% max)...`);
-                                
-                                stakesList = options.slice(0, 3).map((opt, idx) => {
-                                    const prob = opt.estimatedProbability || opt.probability || 0.5;
-                                    const odds = opt.odds || 1.5;
-                                    
-                                    // Kelly avec le pourcentage max choisi
-                                    const b = odds - 1;
-                                    const q = 1 - prob;
-                                    let kellyFraction = Math.max(0, (prob * b - q) / b);
-                                    kellyFraction = Math.min(kellyFraction, maxStakePercentage);
-                                    
-                                    const stake = Math.round(userBalance * kellyFraction) || Math.round(userBalance * maxStakePercentage / 3);
-                                    
-                                    return {
-                                        option: opt.option,
-                                        odds: odds,
-                                        stake: stake,
-                                        adjustedStake: stake,
-                                        potentialReturn: Math.round(stake * odds),
-                                        kellyPercentage: Math.round(kellyFraction * 100 * 10) / 10
-                                    };
-                                });
-                                
-                                console.log('📊 Calculated stakes:', stakesList);
-                            }
-                            
-                            const totalBudget = stakesList.reduce((sum, s) => sum + (s.adjustedStake || s.stake || 0), 0) ||
-                                Math.round((userBalance || 0) * maxStakePercentage);
-                            
-                            console.log('📊 Stakes debug:', { stakePercentage, maxStakePercentage, calculatedStakes: stakesList.length, totalBudget, userBalance });
-                            
-                            if (stakesList.length === 0 && options.length === 0) return null;
-                            
-                            return (
-                                <div className="recommendation-box animate-fade-in delay-4">
-                                    <div className="recommendation-title">
-                                        <Icons.DollarSign />
-                                        Mises recommandées (Kelly)
-                                    </div>
-                                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '12px' }}>
-                                        Budget total: <span style={{ color: 'var(--accent-gold)', fontFamily: 'Space Mono', fontWeight: 'bold' }}>
-                                            {totalBudget?.toLocaleString() || '0'} FCFA
-                                        </span>
-                                        <span style={{ color: 'var(--text-muted)' }}> (6% de {userBalance?.toLocaleString() || '0'} FCFA)</span>
-                                    </div>
-                                    
-                                    {stakesList.length > 0 ? (
-                                        stakesList.map((stake, i) => {
-                                            const stakeAmount = stake.adjustedStake || stake.stake || 0;
-                                            const odds = stake.odds || 1;
-                                            const potentialReturn = stake.potentialReturn || Math.round(stakeAmount * odds);
-                                            
-                                            return (
-                                                <div key={i} style={{ 
-                                                    display: 'flex', 
-                                                    justifyContent: 'space-between', 
-                                                    alignItems: 'center',
-                                                    padding: '8px 0',
-                                                    borderBottom: i < stakesList.length - 1 ? '1px solid var(--border-color)' : 'none'
-                                                }}>
-                                                    <div>
-                                                        <span style={{ color: 'var(--text-primary)' }}>{stake.option}</span>
-                                                        <span style={{ 
-                                                            marginLeft: '8px', 
-                                                            color: 'var(--accent-gold)', 
-                                                            fontSize: '0.8rem',
-                                                            fontFamily: 'Space Mono'
-                                                        }}>
-                                                            @{odds.toFixed(2)}
-                                                        </span>
-                                                        {stake.kellyPercentage && (
-                                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginLeft: '8px' }}>
-                                                                ({stake.kellyPercentage}%)
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <div style={{ textAlign: 'right' }}>
-                                                        <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-green)', fontWeight: 'bold' }}>
-                                                            {stakeAmount.toLocaleString()} FCFA
-                                                        </span>
-                                                        <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                                            → {potentialReturn.toLocaleString()} FCFA
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            );
-                                        })
-                                    ) : (
-                                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '12px 0' }}>
-                                            Sélectionnez des options pour voir les mises recommandées
-                                        </p>
-                                    )}
-                                    
-                                    {stakes?.expectedValue && (
-                                        <div style={{ marginTop: '12px', padding: '8px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px' }}>
-                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Expected Value: </span>
-                                            <span style={{ color: 'var(--accent-green)', fontFamily: 'Space Mono' }}>
-                                                +{stakes.expectedValue?.toLocaleString()} FCFA
-                                            </span>
-                                        </div>
-                                    )}
+                        {/* Récapitulatif des sélections avec mises calculées */}
+                        {selectedOptions.length > 0 && !isReadOnly && (
+                            <div className="recommendation-box animate-fade-in delay-4" style={{
+                                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(59, 130, 246, 0.1) 100%)',
+                                border: '1px solid rgba(16, 185, 129, 0.3)'
+                            }}>
+                                <div className="recommendation-title">
+                                    <Icons.DollarSign />
+                                    📊 Récapitulatif - Mises calculées
                                 </div>
-                            );
-                        })()}
+                                
+                                {/* Info Capital Alloué */}
+                                <div style={{ 
+                                    display: 'flex', 
+                                    justifyContent: 'space-between', 
+                                    alignItems: 'center',
+                                    padding: '10px 12px',
+                                    background: 'rgba(139, 92, 246, 0.1)',
+                                    borderRadius: '8px',
+                                    marginBottom: '12px'
+                                }}>
+                                    <div>
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Capital alloué ({stakePercentage}%)</div>
+                                        <div style={{ fontFamily: 'Space Mono', fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-purple)' }}>
+                                            {allocatedCapital.toLocaleString()} FCFA
+                                        </div>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Réparti sur</div>
+                                        <div style={{ fontFamily: 'Space Mono', fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-blue)' }}>
+                                            {calculatedOptions.length} option{calculatedOptions.length > 1 ? 's' : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                {/* Liste des options sélectionnées avec mises */}
+                                {calculatedOptions.map((opt, i) => (
+                                    <div key={i} style={{ 
+                                        display: 'flex', 
+                                        justifyContent: 'space-between', 
+                                        alignItems: 'center',
+                                        padding: '10px 0',
+                                        borderBottom: i < calculatedOptions.length - 1 ? '1px solid var(--border-color)' : 'none'
+                                    }}>
+                                        <div style={{ flex: 1 }}>
+                                            <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>{opt.option}</span>
+                                            <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+                                                <span style={{ color: 'var(--accent-gold)', fontSize: '0.8rem', fontFamily: 'Space Mono' }}>
+                                                    @{opt.odds?.toFixed(2)}
+                                                </span>
+                                                <span style={{ color: 'var(--accent-purple)', fontSize: '0.8rem' }}>
+                                                    🤖 {Math.round(opt.probability * 100)}%
+                                                </span>
+                                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                                    ({opt.kellyPercentage}%)
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <div style={{ fontFamily: 'Space Mono', color: 'var(--accent-green)', fontWeight: 'bold', fontSize: '1rem' }}>
+                                                {opt.stake?.toLocaleString()} F
+                                            </div>
+                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                → {opt.potentialReturn?.toLocaleString()} F
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                
+                                {/* Total */}
+                                <div style={{ 
+                                    marginTop: '12px', 
+                                    padding: '12px',
+                                    background: 'rgba(16, 185, 129, 0.15)',
+                                    borderRadius: '8px',
+                                    display: 'flex',
+                                    justifyContent: 'space-between'
+                                }}>
+                                    <div>
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total misé</div>
+                                        <div style={{ fontFamily: 'Space Mono', fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-green)' }}>
+                                            {calculatedOptions.reduce((sum, o) => sum + (o.stake || 0), 0).toLocaleString()} FCFA
+                                        </div>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Gain max potentiel</div>
+                                        <div style={{ fontFamily: 'Space Mono', fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-gold)' }}>
+                                            +{calculatedOptions.reduce((sum, o) => sum + ((o.potentialReturn || 0) - (o.stake || 0)), 0).toLocaleString()} FCFA
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* Message si aucune sélection */}
+                        {selectedOptions.length === 0 && !isReadOnly && options.length > 0 && (
+                            <div style={{ 
+                                padding: '16px', 
+                                textAlign: 'center',
+                                background: 'rgba(245, 158, 11, 0.1)',
+                                borderRadius: '12px',
+                                marginTop: '16px'
+                            }}>
+                                <p style={{ color: 'var(--accent-gold)', margin: 0, fontSize: '0.9rem' }}>
+                                    👆 Sélectionnez des options pour voir les mises calculées automatiquement
+                                </p>
+                            </div>
+                        )}
 
                         {/* Bouton Valider ou Retour */}
                         {isReadOnly ? (
