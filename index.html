@@ -4049,6 +4049,13 @@
             const [hedgingStrategy, setHedgingStrategy] = useState(null);
             const [calculatingStrategy, setCalculatingStrategy] = useState(false);
             const [liveOdds, setLiveOdds] = useState({});
+            
+            // ========== NOUVEAUX ÉTATS POUR LE SUIVI AVANCÉ ==========
+            const [liveEvents, setLiveEvents] = useState([]); // Événements du match (buts, cartons...)
+            const [globalStatus, setGlobalStatus] = useState(null); // Statut global de la prédiction
+            const [showEvents, setShowEvents] = useState(true); // Afficher/masquer les événements
+            const [refreshInterval, setRefreshInterval] = useState(30); // Intervalle en secondes (30 par défaut)
+            const [lastRefresh, setLastRefresh] = useState(null);
 
             // Vérifier si une stratégie a déjà été générée (informatif seulement, pas de blocage)
             const hasExistingStrategy = currentPrediction?.hedgingStrategy || currentPrediction?.hedgingStrategyGenerated;
@@ -4180,7 +4187,7 @@
             // NE PAS rediriger automatiquement - juste afficher un message si pas d'options
             // L'utilisateur peut retourner manuellement
 
-            // Vérifier le statut du match et suivre les options
+            // ========== SUIVI EN TEMPS RÉEL AVANCÉ ==========
             const checkMatchStatus = async () => {
                 // Obtenir un token frais
                 const token = await getValidToken();
@@ -4191,7 +4198,76 @@
                     return;
                 }
                 
-                // Si on a un predictionId, utiliser l'endpoint de tracking complet
+                // Utiliser le nouveau endpoint de live-tracking avancé
+                if (predictionId && user) {
+                    try {
+                        console.log('🔴 Fetching live tracking for prediction:', predictionId);
+                        const trackResponse = await fetch(`${API_BASE_URL}/predictions/${predictionId}/live-tracking`, {
+                            headers: { 'Authorization': `Bearer ${token}` }
+                        });
+
+                        if (trackResponse.ok) {
+                            const trackData = await trackResponse.json();
+                            console.log('📊 Live tracking data:', trackData);
+                            setTrackingData(trackData.tracking);
+                            setLastRefresh(new Date());
+                            
+                            if (trackData.tracking?.matchStatus) {
+                                const ms = trackData.tracking.matchStatus;
+                                setMatchStatus(ms);
+                                setCanHedge(ms.canHedge || false);
+                                
+                                // Message basé sur le statut réel
+                                if (!ms.hasStarted) {
+                                    setStatusMessage(`Le match n'a pas encore commencé. Coup d'envoi prévu.`);
+                                } else if (ms.isFinished) {
+                                    setStatusMessage(`Match terminé (${ms.statusLong || 'FT'})`);
+                                } else if (!ms.canHedge) {
+                                    const waitTime = Math.max(0, 40 - (ms.elapsed || 0));
+                                    setStatusMessage(`Match en cours (${ms.elapsed}'). Hedging disponible dans ${waitTime} min.`);
+                                } else {
+                                    setStatusMessage("✅ Stratégie de couverture disponible!");
+                                }
+                                
+                                // Score live
+                                if (ms.score) {
+                                    setLiveData({
+                                        score: `${ms.score.home ?? 0} - ${ms.score.away ?? 0}`,
+                                        minute: ms.elapsed || '0',
+                                        status: ms.statusLong || ms.status
+                                    });
+                                }
+                            }
+                            
+                            // Options évaluées avec probabilités dynamiques et évolution des cotes
+                            if (trackData.tracking?.options) {
+                                setEvaluatedOptions(trackData.tracking.options);
+                            }
+                            
+                            // Événements du match
+                            if (trackData.tracking?.events) {
+                                setLiveEvents(trackData.tracking.events);
+                            }
+                            
+                            // Statut global de la prédiction
+                            if (trackData.tracking?.globalStatus) {
+                                setGlobalStatus(trackData.tracking.globalStatus);
+                            }
+                            
+                            // Cotes live
+                            if (trackData.tracking?.liveOdds) {
+                                setLiveOdds(trackData.tracking.liveOdds);
+                            }
+                            
+                            setCheckingStatus(false);
+                            return;
+                        }
+                    } catch (error) {
+                        console.warn("Live tracking error:", error);
+                    }
+                }
+                
+                // Fallback vers l'ancien endpoint de tracking simple
                 if (predictionId && user) {
                     try {
                         const trackResponse = await fetch(`${API_BASE_URL}/predictions/${predictionId}/track`, {
@@ -4207,17 +4283,15 @@
                                 setMatchStatus(ms);
                                 setCanHedge(ms.canHedge || false);
                                 
-                                // Message basé sur le statut réel
                                 if (!ms.hasStarted) {
-                                    setStatusMessage(`Le match n'a pas encore commencé. Coup d'envoi prévu.`);
+                                    setStatusMessage(`Le match n'a pas encore commencé.`);
                                 } else if (!ms.canHedge) {
                                     const waitTime = Math.max(0, 40 - (ms.elapsed || 0));
-                                    setStatusMessage(`Match en cours (${ms.elapsed}'). Hedging disponible dans ${waitTime} min ou à la mi-temps.`);
+                                    setStatusMessage(`Match en cours (${ms.elapsed}'). Hedging dans ${waitTime} min.`);
                                 } else {
                                     setStatusMessage("✅ Stratégie de couverture disponible!");
                                 }
                                 
-                                // Score live
                                 if (ms.score) {
                                     setLiveData({
                                         score: `${ms.score.home ?? 0} - ${ms.score.away ?? 0}`,
@@ -4227,7 +4301,6 @@
                                 }
                             }
                             
-                            // Options évaluées
                             if (trackData.tracking?.options) {
                                 setEvaluatedOptions(trackData.tracking.options);
                             }
@@ -4278,12 +4351,12 @@
             useEffect(() => {
                 checkMatchStatus();
                 
-                // Rafraîchir automatiquement
+                // Rafraîchir automatiquement avec intervalle configurable
                 let interval;
-                if (autoRefresh) {
+                if (autoRefresh && matchStatus?.hasStarted && !matchStatus?.isFinished) {
                     interval = setInterval(() => {
                         checkMatchStatus();
-                    }, 30000); // Toutes les 30 secondes
+                    }, refreshInterval * 1000); // Convertir en millisecondes
                 }
 
                 return () => {
@@ -4583,80 +4656,335 @@
                                     </div>
                                 )}
 
-                                {/* Section Suivi Live des Options */}
-                                {evaluatedOptions.length > 0 && matchStatus?.hasStarted && (
+                                {/* Section Suivi Live des Options - VERSION AMÉLIORÉE */}
+                                {matchStatus?.hasStarted && (
                                     <div className="card animate-fade-in" style={{ 
                                         marginBottom: '16px',
-                                        background: 'rgba(59, 130, 246, 0.1)',
+                                        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%)',
                                         border: '1px solid rgba(59, 130, 246, 0.3)'
                                     }}>
+                                        {/* Header avec contrôles */}
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                                            <h4 style={{ color: 'var(--accent-blue)' }}>📊 Suivi Live des Paris</h4>
-                                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                                <input 
-                                                    type="checkbox" 
-                                                    checked={autoRefresh} 
-                                                    onChange={(e) => setAutoRefresh(e.target.checked)}
-                                                    style={{ accentColor: 'var(--accent-gold)' }}
-                                                />
-                                                Auto-refresh
-                                            </label>
+                                            <h4 style={{ color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                🔴 Suivi Live
+                                                {autoRefresh && <span style={{ 
+                                                    width: '8px', height: '8px', 
+                                                    borderRadius: '50%', 
+                                                    background: 'var(--accent-green)',
+                                                    animation: 'pulse 2s infinite'
+                                                }}></span>}
+                                            </h4>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                                <select 
+                                                    value={refreshInterval}
+                                                    onChange={(e) => setRefreshInterval(parseInt(e.target.value))}
+                                                    style={{ 
+                                                        background: 'var(--bg-secondary)', 
+                                                        border: '1px solid var(--border-color)',
+                                                        borderRadius: '6px',
+                                                        padding: '4px 8px',
+                                                        fontSize: '0.7rem',
+                                                        color: 'var(--text-secondary)'
+                                                    }}
+                                                >
+                                                    <option value={15}>15s</option>
+                                                    <option value={30}>30s</option>
+                                                    <option value={60}>1min</option>
+                                                </select>
+                                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                    <input 
+                                                        type="checkbox" 
+                                                        checked={autoRefresh} 
+                                                        onChange={(e) => setAutoRefresh(e.target.checked)}
+                                                        style={{ accentColor: 'var(--accent-gold)' }}
+                                                    />
+                                                    Auto
+                                                </label>
+                                            </div>
                                         </div>
+                                        
+                                        {/* Statut Global de la Prédiction */}
+                                        {globalStatus && (
+                                            <div style={{
+                                                padding: '12px',
+                                                marginBottom: '12px',
+                                                borderRadius: '10px',
+                                                background: globalStatus.status === 'favorable' || globalStatus.status === 'won' || globalStatus.status === 'partial_win' 
+                                                    ? 'rgba(16, 185, 129, 0.15)' 
+                                                    : globalStatus.status === 'unfavorable' || globalStatus.status === 'lost' || globalStatus.status === 'partial_loss'
+                                                    ? 'rgba(239, 68, 68, 0.15)'
+                                                    : 'rgba(245, 158, 11, 0.15)',
+                                                border: `1px solid ${globalStatus.status === 'favorable' || globalStatus.status === 'won' || globalStatus.status === 'partial_win' 
+                                                    ? 'rgba(16, 185, 129, 0.3)' 
+                                                    : globalStatus.status === 'unfavorable' || globalStatus.status === 'lost' || globalStatus.status === 'partial_loss'
+                                                    ? 'rgba(239, 68, 68, 0.3)'
+                                                    : 'rgba(245, 158, 11, 0.3)'}`
+                                            }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                                        <span style={{ fontSize: '1.5rem' }}>{globalStatus.emoji}</span>
+                                                        <div>
+                                                            <div style={{ fontWeight: '600', fontSize: '0.95rem' }}>{globalStatus.message}</div>
+                                                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                                {globalStatus.won > 0 && `✅ ${globalStatus.won} gagné(s)`}
+                                                                {globalStatus.winning > 0 && ` 📈 ${globalStatus.winning} en gain`}
+                                                                {globalStatus.pending > 0 && ` ⏳ ${globalStatus.pending} en attente`}
+                                                                {globalStatus.losing > 0 && ` 📉 ${globalStatus.losing} en perte`}
+                                                                {globalStatus.lost > 0 && ` ❌ ${globalStatus.lost} perdu(s)`}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ 
+                                                        padding: '8px 14px',
+                                                        borderRadius: '20px',
+                                                        background: 'rgba(255,255,255,0.1)',
+                                                        textAlign: 'center'
+                                                    }}>
+                                                        <div style={{ fontSize: '1.3rem', fontWeight: '700', fontFamily: 'Space Mono' }}>
+                                                            {globalStatus.avgProbability}%
+                                                        </div>
+                                                        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Prob. réussite</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        {/* Événements du Match */}
+                                        {liveEvents.length > 0 && (
+                                            <div style={{ marginBottom: '12px' }}>
+                                                <div 
+                                                    style={{ 
+                                                        display: 'flex', 
+                                                        justifyContent: 'space-between', 
+                                                        alignItems: 'center',
+                                                        cursor: 'pointer',
+                                                        marginBottom: '8px'
+                                                    }}
+                                                    onClick={() => setShowEvents(!showEvents)}
+                                                >
+                                                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                                        ⚽ Événements ({liveEvents.length})
+                                                    </span>
+                                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                                                        {showEvents ? '▼' : '▶'}
+                                                    </span>
+                                                </div>
+                                                {showEvents && (
+                                                    <div style={{ 
+                                                        maxHeight: '120px', 
+                                                        overflowY: 'auto',
+                                                        background: 'rgba(0,0,0,0.2)',
+                                                        borderRadius: '8px',
+                                                        padding: '8px'
+                                                    }}>
+                                                        {liveEvents.map((event, idx) => (
+                                                            <div key={idx} style={{
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                gap: '8px',
+                                                                padding: '4px 0',
+                                                                borderBottom: idx < liveEvents.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
+                                                                fontSize: '0.75rem'
+                                                            }}>
+                                                                <span style={{ 
+                                                                    fontFamily: 'Space Mono', 
+                                                                    color: 'var(--accent-gold)',
+                                                                    minWidth: '30px'
+                                                                }}>
+                                                                    {event.time}'
+                                                                </span>
+                                                                <span style={{ fontSize: '1rem' }}>
+                                                                    {event.type === 'Goal' ? '⚽' : 
+                                                                     event.type === 'Card' && event.detail === 'Yellow Card' ? '🟨' :
+                                                                     event.type === 'Card' && event.detail === 'Red Card' ? '🟥' :
+                                                                     event.type === 'subst' ? '🔄' :
+                                                                     event.type === 'Var' ? '📺' : '📋'}
+                                                                </span>
+                                                                <span style={{ color: 'var(--text-secondary)', flex: 1 }}>
+                                                                    {event.player} ({event.team})
+                                                                </span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                        
+                                        {/* Options avec évolution des cotes */}
                                         {evaluatedOptions.map((evalOpt, index) => {
                                             const getStatusStyle = (status) => {
                                                 switch(status) {
-                                                    case 'won': return { bg: 'rgba(16, 185, 129, 0.2)', color: 'var(--accent-green)', icon: '✅', text: 'GAGNÉ' };
-                                                    case 'winning': return { bg: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent-green-light)', icon: '📈', text: 'En gain' };
-                                                    case 'lost': return { bg: 'rgba(239, 68, 68, 0.2)', color: 'var(--accent-red)', icon: '❌', text: 'PERDU' };
-                                                    case 'losing': return { bg: 'rgba(239, 68, 68, 0.15)', color: 'var(--accent-red-light)', icon: '📉', text: 'En perte' };
+                                                    case 'won': return { bg: 'rgba(16, 185, 129, 0.25)', color: 'var(--accent-green)', icon: '✅', text: 'GAGNÉ' };
+                                                    case 'winning': return { bg: 'rgba(16, 185, 129, 0.15)', color: '#34d399', icon: '📈', text: 'En gain' };
+                                                    case 'lost': return { bg: 'rgba(239, 68, 68, 0.25)', color: 'var(--accent-red)', icon: '❌', text: 'PERDU' };
+                                                    case 'losing': return { bg: 'rgba(239, 68, 68, 0.15)', color: '#f87171', icon: '📉', text: 'En perte' };
                                                     default: return { bg: 'rgba(245, 158, 11, 0.15)', color: 'var(--accent-gold)', icon: '⏳', text: 'En cours' };
                                                 }
                                             };
                                             const style = getStatusStyle(evalOpt.currentStatus);
                                             
+                                            // Évolution des cotes
+                                            const oddsChange = evalOpt.oddsChange;
+                                            const hasOddsChange = oddsChange && oddsChange.isSignificant;
+                                            
                                             return (
                                                 <div key={index} style={{
-                                                    padding: '10px 12px',
-                                                    marginBottom: index < evaluatedOptions.length - 1 ? '8px' : 0,
+                                                    padding: '12px',
+                                                    marginBottom: index < evaluatedOptions.length - 1 ? '10px' : 0,
                                                     background: style.bg,
-                                                    borderRadius: '8px',
-                                                    display: 'flex',
-                                                    justifyContent: 'space-between',
-                                                    alignItems: 'center'
+                                                    borderRadius: '10px'
                                                 }}>
-                                                    <div>
-                                                        <div style={{ fontSize: '0.85rem', marginBottom: '4px' }}>{evalOpt.option}</div>
-                                                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                                            Mise: {(evalOpt.stake || evalOpt.adjustedStake || 0).toLocaleString()} F @ {evalOpt.odds?.toFixed(2)}
-                                                        </div>
-                                                    </div>
-                                                    <div style={{ textAlign: 'right' }}>
+                                                    {/* Ligne 1: Nom et Statut */}
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                                        <div style={{ fontWeight: '600', fontSize: '0.9rem' }}>{evalOpt.option}</div>
                                                         <div style={{ 
                                                             display: 'flex', 
                                                             alignItems: 'center', 
                                                             gap: '6px',
+                                                            padding: '4px 10px',
+                                                            borderRadius: '15px',
+                                                            background: 'rgba(0,0,0,0.2)',
                                                             color: style.color,
                                                             fontWeight: '600',
-                                                            fontSize: '0.9rem'
+                                                            fontSize: '0.8rem'
                                                         }}>
                                                             <span>{style.icon}</span>
                                                             <span>{style.text}</span>
                                                         </div>
-                                                        {evalOpt.currentProfit !== undefined && evalOpt.currentProfit !== 0 && (
-                                                            <div style={{ 
-                                                                fontSize: '0.8rem', 
-                                                                fontFamily: 'Space Mono',
-                                                                color: evalOpt.currentProfit > 0 ? 'var(--accent-green)' : 'var(--accent-red)'
-                                                            }}>
-                                                                {evalOpt.currentProfit > 0 ? '+' : ''}{evalOpt.currentProfit.toLocaleString()} F
-                                                            </div>
-                                                        )}
                                                     </div>
+                                                    
+                                                    {/* Ligne 2: Cotes avec évolution */}
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Cote:</span>
+                                                            <span style={{ 
+                                                                fontFamily: 'Space Mono', 
+                                                                color: 'var(--text-muted)',
+                                                                textDecoration: hasOddsChange ? 'line-through' : 'none',
+                                                                fontSize: '0.8rem'
+                                                            }}>
+                                                                {(evalOpt.originalOdds || evalOpt.odds)?.toFixed(2)}
+                                                            </span>
+                                                            {hasOddsChange && (
+                                                                <>
+                                                                    <span style={{ color: 'var(--text-muted)' }}>→</span>
+                                                                    <span style={{ 
+                                                                        fontFamily: 'Space Mono', 
+                                                                        fontWeight: '700',
+                                                                        fontSize: '0.9rem',
+                                                                        color: oddsChange.direction === 'down' ? 'var(--accent-green)' : 
+                                                                               oddsChange.direction === 'up' ? 'var(--accent-red)' : 'var(--text-primary)'
+                                                                    }}>
+                                                                        {evalOpt.currentOdds?.toFixed(2)}
+                                                                    </span>
+                                                                    <span style={{ 
+                                                                        fontSize: '0.7rem',
+                                                                        padding: '2px 6px',
+                                                                        borderRadius: '8px',
+                                                                        background: oddsChange.direction === 'down' ? 'rgba(16, 185, 129, 0.2)' : 
+                                                                                   oddsChange.direction === 'up' ? 'rgba(239, 68, 68, 0.2)' : 'transparent',
+                                                                        color: oddsChange.direction === 'down' ? 'var(--accent-green)' : 
+                                                                               oddsChange.direction === 'up' ? 'var(--accent-red)' : 'var(--text-muted)'
+                                                                    }}>
+                                                                        {oddsChange.direction === 'down' ? '▼' : oddsChange.direction === 'up' ? '▲' : '='} 
+                                                                        {Math.abs(oddsChange.percentageChange)}%
+                                                                    </span>
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                        
+                                                        {/* Probabilité dynamique */}
+                                                        <div style={{ 
+                                                            display: 'flex', 
+                                                            alignItems: 'center', 
+                                                            gap: '6px',
+                                                            padding: '4px 10px',
+                                                            borderRadius: '12px',
+                                                            background: 'rgba(139, 92, 246, 0.2)'
+                                                        }}>
+                                                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Prob:</span>
+                                                            <span style={{ 
+                                                                fontFamily: 'Space Mono', 
+                                                                fontWeight: '700',
+                                                                color: 'var(--accent-purple)',
+                                                                fontSize: '0.9rem'
+                                                            }}>
+                                                                {evalOpt.dynamicProbability || evalOpt.probability || 50}%
+                                                            </span>
+                                                            {evalOpt.probabilityTrend && (
+                                                                <span style={{ fontSize: '0.8rem' }}>
+                                                                    {evalOpt.probabilityTrend === 'up' ? '📈' : 
+                                                                     evalOpt.probabilityTrend === 'down' ? '📉' : ''}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    {/* Ligne 3: Mise et Gain potentiel */}
+                                                    <div style={{ 
+                                                        display: 'flex', 
+                                                        justifyContent: 'space-between',
+                                                        fontSize: '0.75rem',
+                                                        color: 'var(--text-muted)',
+                                                        paddingTop: '8px',
+                                                        borderTop: '1px solid rgba(255,255,255,0.1)'
+                                                    }}>
+                                                        <span>
+                                                            Mise: <strong style={{ color: 'var(--accent-gold)' }}>
+                                                                {(evalOpt.stake || evalOpt.adjustedStake || 0).toLocaleString()} F
+                                                            </strong>
+                                                        </span>
+                                                        <span>
+                                                            Gain: <strong style={{ color: 'var(--accent-green)' }}>
+                                                                +{Math.round((evalOpt.stake || 0) * ((evalOpt.currentOdds || evalOpt.odds || 1.5) - 1)).toLocaleString()} F
+                                                            </strong>
+                                                        </span>
+                                                    </div>
+                                                    
+                                                    {/* Suggestion de recalcul si cotes changées significativement */}
+                                                    {hasOddsChange && evalOpt.suggestedStake && (
+                                                        <div style={{
+                                                            marginTop: '8px',
+                                                            padding: '8px',
+                                                            background: 'rgba(245, 158, 11, 0.1)',
+                                                            borderRadius: '6px',
+                                                            fontSize: '0.7rem',
+                                                            color: 'var(--accent-gold)'
+                                                        }}>
+                                                            💡 Nouvelle mise suggérée: <strong>{evalOpt.suggestedStake.recommendedStake?.toLocaleString()} F</strong>
+                                                            {' '}(Kelly: {evalOpt.suggestedStake.kellyPercentage}%)
+                                                        </div>
+                                                    )}
                                                 </div>
                                             );
                                         })}
-                                        <div style={{ marginTop: '12px', fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-                                            Dernière mise à jour: {trackingData?.evaluatedAt ? new Date(trackingData.evaluatedAt).toLocaleTimeString('fr-FR') : 'N/A'}
+                                        
+                                        {/* Footer avec dernière mise à jour */}
+                                        <div style={{ 
+                                            marginTop: '12px', 
+                                            display: 'flex',
+                                            justifyContent: 'space-between',
+                                            alignItems: 'center',
+                                            fontSize: '0.7rem', 
+                                            color: 'var(--text-muted)'
+                                        }}>
+                                            <span>
+                                                {lastRefresh ? `Mise à jour: ${lastRefresh.toLocaleTimeString('fr-FR')}` : ''}
+                                            </span>
+                                            <button 
+                                                onClick={checkMatchStatus}
+                                                style={{
+                                                    background: 'rgba(59, 130, 246, 0.2)',
+                                                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                                                    borderRadius: '6px',
+                                                    padding: '4px 10px',
+                                                    color: 'var(--accent-blue)',
+                                                    cursor: 'pointer',
+                                                    fontSize: '0.7rem'
+                                                }}
+                                            >
+                                                🔄 Actualiser
+                                            </button>
                                         </div>
                                     </div>
                                 )}
