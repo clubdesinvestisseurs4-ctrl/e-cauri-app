@@ -5223,14 +5223,24 @@
         };
 
         const CoverageStrategyPage = () => {
-            const { navigate, currentPrediction, selectedOptions, showNotification } = useApp();
+            const { navigate, currentPrediction, selectedOptions, showNotification, API_BASE_URL, getValidToken } = useApp();
             const [selectedStrategy, setSelectedStrategy] = useState(null);
             const [expandedStrategy, setExpandedStrategy] = useState(null);
             
+            // ========== NOUVEAUX ÉTATS POUR LE SUIVI LIVE ==========
+            const [liveOddsData, setLiveOddsData] = useState(null);
+            const [isRefreshing, setIsRefreshing] = useState(false);
+            const [lastOddsUpdate, setLastOddsUpdate] = useState(null);
+            const [autoRefreshOdds, setAutoRefreshOdds] = useState(true);
+            const [oddsChanges, setOddsChanges] = useState({}); // Stocke les changements de cotes
+            const [recalculatedStrategies, setRecalculatedStrategies] = useState(null);
+            
             const matchInfo = currentPrediction?.match || currentPrediction?.matchInfo || currentPrediction?.meta;
+            const fixtureId = currentPrediction?.matchInfo?.fixtureId || currentPrediction?.meta?.matchId || currentPrediction?.opportunityId;
+            const bookmaker = currentPrediction?.bookmaker || currentPrediction?.selectedBookmaker?.key || '1xbet';
             
             // Récupérer la stratégie générée (nouveau format avec multiples stratégies)
-            const strategyData = currentPrediction?.hedgingStrategy;
+            const strategyData = recalculatedStrategies || currentPrediction?.hedgingStrategy;
             const strategies = strategyData?.strategies || [];
             const optionsStatus = strategyData?.optionsStatus || [];
             const matchAnalysis = strategyData?.matchAnalysis;
@@ -5248,6 +5258,228 @@
             const totalStake = options.reduce((sum, opt) => sum + (opt.stake || opt.adjustedStake || 0), 0);
             const totalPotentialProfit = options.reduce((sum, opt) => sum + (opt.potentialProfit || Math.round((opt.stake || 0) * ((opt.odds || 1.5) - 1))), 0);
             const totalCashout = options.reduce((sum, opt) => sum + (opt.cashoutValue || opt.cashout || 0), 0);
+
+            // ========== FONCTION DE RÉCUPÉRATION DES COTES LIVE ==========
+            const fetchLiveOdds = async () => {
+                if (!fixtureId) return;
+                
+                setIsRefreshing(true);
+                try {
+                    const token = await getValidToken();
+                    if (!token) return;
+                    
+                    // Utiliser le nouvel endpoint de live-tracking
+                    const response = await fetch(`${API_BASE_URL}/predictions/${currentPrediction?.id}/live-tracking`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        console.log('📊 Live tracking data for coverage:', data);
+                        
+                        if (data.tracking?.liveOdds) {
+                            setLiveOddsData(data.tracking.liveOdds);
+                            setLastOddsUpdate(new Date());
+                            
+                            // Calculer les changements de cotes
+                            const changes = {};
+                            if (data.tracking?.options) {
+                                data.tracking.options.forEach(opt => {
+                                    if (opt.oddsChange?.isSignificant) {
+                                        changes[opt.option] = {
+                                            original: opt.originalOdds,
+                                            current: opt.currentOdds,
+                                            change: opt.oddsChange
+                                        };
+                                    }
+                                });
+                            }
+                            setOddsChanges(changes);
+                            
+                            // Récupérer les cotes de couverture
+                            const hedgingOdds = data.tracking?.hedgingOdds;
+                            
+                            // Recalculer les stratégies avec les nouvelles cotes
+                            if (data.tracking?.options || hedgingOdds) {
+                                await recalculateStrategiesWithNewOdds(
+                                    data.tracking.options, 
+                                    data.tracking.matchStatus,
+                                    hedgingOdds
+                                );
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error fetching live odds:', error);
+                } finally {
+                    setIsRefreshing(false);
+                }
+            };
+            
+            // ========== RECALCUL DES STRATÉGIES AVEC NOUVELLES COTES ==========
+            const recalculateStrategiesWithNewOdds = async (updatedOptions, matchStatus, hedgingOdds) => {
+                if (!strategyData) return;
+                
+                console.log('🔄 Recalculating strategies with new odds:', { updatedOptions, hedgingOdds });
+                
+                // Mettre à jour les options avec les nouvelles cotes
+                const updatedStrategies = { ...strategyData };
+                
+                // Recalculer les mises pour chaque stratégie
+                updatedStrategies.strategies = strategies.map(strat => {
+                    const newStrat = { ...strat };
+                    
+                    // Recalculer les actions de hedge avec les nouvelles cotes
+                    if (strat.hedgeRequired && (strat.hedgeBet || strat.hedgeOdds)) {
+                        const hedgeBetType = typeof strat.hedgeBet === 'string' ? strat.hedgeBet : strat.hedgeBet?.type;
+                        const originalOdds = typeof strat.hedgeBet === 'object' ? strat.hedgeBet.odds : strat.hedgeOdds;
+                        const originalStake = typeof strat.hedgeBet === 'object' ? strat.hedgeBet.stake : strat.hedgeStake;
+                        
+                        // Trouver la nouvelle cote dans hedgingOdds
+                        const newOdds = findLiveOddsForBet(hedgeBetType, hedgingOdds);
+                        
+                        if (newOdds && originalOdds && Math.abs(newOdds - originalOdds) > 0.05) {
+                            // Recalculer la mise pour garder le même retour potentiel
+                            const originalReturn = originalStake * originalOdds;
+                            const newStake = Math.ceil(originalReturn / newOdds);
+                            
+                            newStrat.hedgeBet = {
+                                type: hedgeBetType,
+                                originalOdds: originalOdds,
+                                odds: newOdds,
+                                originalStake: originalStake,
+                                stake: newStake,
+                                oddsChanged: true,
+                                changeDirection: newOdds > originalOdds ? 'up' : 'down',
+                                changePercent: Math.round(((newOdds - originalOdds) / originalOdds) * 100)
+                            };
+                            
+                            newStrat.hedgeOdds = newOdds;
+                            newStrat.hedgeStake = newStake;
+                            
+                            // Recalculer les scénarios
+                            newStrat.scenarios = recalculateScenarios(strat, newStake, newOdds, totalStake);
+                        }
+                    }
+                    
+                    return newStrat;
+                });
+                
+                // Mettre à jour le statut des options
+                if (updatedOptions) {
+                    updatedStrategies.optionsStatus = updatedOptions.map(opt => ({
+                        option: opt.option,
+                        status: opt.currentStatus,
+                        originalOdds: opt.originalOdds,
+                        currentOdds: opt.currentOdds,
+                        oddsChanged: opt.oddsChange?.isSignificant,
+                        probability: opt.dynamicProbability / 100,
+                        analysis: `Prob: ${opt.dynamicProbability}% | Cote: ${opt.currentOdds?.toFixed(2) || opt.odds?.toFixed(2)}`
+                    }));
+                    
+                    // Mettre à jour les options principales aussi
+                    updatedStrategies.options = updatedOptions;
+                }
+                
+                setRecalculatedStrategies(updatedStrategies);
+            };
+            
+            // Helper: Trouver les cotes live pour un type de pari
+            const findLiveOddsForBet = (betType, hedgingOdds) => {
+                if (!betType || !hedgingOdds) return null;
+                
+                const typeLower = (betType || '').toLowerCase();
+                
+                // Nouvelle structure: hedgingOdds.doubleChance, hedgingOdds.matchWinner, hedgingOdds.overUnder
+                const dc = hedgingOdds?.doubleChance || {};
+                const mw = hedgingOdds?.matchWinner || {};
+                const ou = hedgingOdds?.overUnder || {};
+                const recommends = hedgingOdds?.recommendedHedges || [];
+                
+                // Chercher d'abord dans les recommandations
+                const recommended = recommends.find(r => 
+                    r.hedgeBet?.toLowerCase().includes(typeLower) || 
+                    r.hedgeBetKey?.toLowerCase().includes(typeLower) ||
+                    typeLower.includes(r.hedgeBetKey?.toLowerCase() || '')
+                );
+                if (recommended?.currentOdds) return recommended.currentOdds;
+                
+                // Double Chance X2 (Away or Draw)
+                if (typeLower.includes('x2') || typeLower.includes('away or draw') || 
+                    (typeLower.includes('double chance') && typeLower.includes('away'))) {
+                    return dc.awayOrDraw || null;
+                }
+                
+                // Double Chance 1X (Home or Draw)
+                if (typeLower.includes('1x') || typeLower.includes('home or draw') ||
+                    (typeLower.includes('double chance') && typeLower.includes('home') && typeLower.includes('draw'))) {
+                    return dc.homeOrDraw || null;
+                }
+                
+                // Double Chance 12 (Home or Away)
+                if (typeLower.includes('12') || typeLower.includes('home or away')) {
+                    return dc.homeOrAway || null;
+                }
+                
+                // Over
+                if (typeLower.includes('over') || typeLower.includes('plus de')) {
+                    const match = typeLower.match(/(\d+\.?\d*)/);
+                    if (match && ou[match[1]]) {
+                        return ou[match[1]].over || null;
+                    }
+                }
+                
+                // Under
+                if (typeLower.includes('under') || typeLower.includes('moins de')) {
+                    const match = typeLower.match(/(\d+\.?\d*)/);
+                    if (match && ou[match[1]]) {
+                        return ou[match[1]].under || null;
+                    }
+                }
+                
+                // 1X2 - Match Winner
+                if (typeLower.includes('home win') || typeLower === 'home' || typeLower === '1') {
+                    return mw.home || null;
+                }
+                if (typeLower.includes('draw') || typeLower === 'x' || typeLower === 'nul') {
+                    return mw.draw || null;
+                }
+                if (typeLower.includes('away win') || typeLower === 'away' || typeLower === '2') {
+                    return mw.away || null;
+                }
+                
+                return null;
+            };
+            
+            // Helper: Recalculer les scénarios
+            const recalculateScenarios = (strat, newStake, newOdds, totalOriginalStake) => {
+                if (!strat.scenarios) return [];
+                
+                return strat.scenarios.map(scenario => {
+                    const newScenario = { ...scenario };
+                    
+                    // Recalculer le profit/perte basé sur la nouvelle mise
+                    if (scenario.hedgeWins) {
+                        newScenario.profit = Math.round(newStake * newOdds - newStake - totalOriginalStake);
+                    }
+                    
+                    return newScenario;
+                });
+            };
+            
+            // ========== EFFET: AUTO-REFRESH DES COTES ==========
+            useEffect(() => {
+                fetchLiveOdds(); // Premier chargement
+                
+                let interval;
+                if (autoRefreshOdds) {
+                    interval = setInterval(fetchLiveOdds, 30000); // Toutes les 30s
+                }
+                
+                return () => {
+                    if (interval) clearInterval(interval);
+                };
+            }, [fixtureId, autoRefreshOdds]);
 
             const handleSelectStrategy = (strategyId) => {
                 setSelectedStrategy(strategyId);
@@ -5547,15 +5779,32 @@
                                                                 📝 Action à effectuer:
                                                             </div>
                                                             
-                                                            {/* Affichage spécial si hedge requis */}
+                                                            {/* Affichage spécial si hedge requis - AVEC ÉVOLUTION DES COTES */}
                                                             {strat.hedgeRequired && strat.hedgeBet && (
                                                                 <div style={{
                                                                     padding: '12px',
                                                                     background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.15) 0%, rgba(234, 88, 12, 0.1) 100%)',
                                                                     borderRadius: '8px',
-                                                                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                                                                    border: strat.hedgeBet.oddsChanged ? '2px solid rgba(59, 130, 246, 0.5)' : '1px solid rgba(245, 158, 11, 0.3)',
                                                                     marginBottom: '8px'
                                                                 }}>
+                                                                    {/* Badge si cotes ont changé */}
+                                                                    {strat.hedgeBet.oddsChanged && (
+                                                                        <div style={{
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            gap: '6px',
+                                                                            marginBottom: '8px',
+                                                                            padding: '4px 8px',
+                                                                            background: strat.hedgeBet.changeDirection === 'down' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                                                            borderRadius: '6px',
+                                                                            fontSize: '0.7rem',
+                                                                            color: strat.hedgeBet.changeDirection === 'down' ? '#10b981' : '#ef4444'
+                                                                        }}>
+                                                                            {strat.hedgeBet.changeDirection === 'down' ? '📉 Cote en baisse - FAVORABLE!' : '📈 Cote en hausse - mise ajustée'}
+                                                                        </div>
+                                                                    )}
+                                                                    
                                                                     <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
                                                                         🎯 PARI DE COUVERTURE À PLACER:
                                                                     </div>
@@ -5565,9 +5814,10 @@
                                                                         color: 'var(--accent-gold)',
                                                                         marginBottom: '8px'
                                                                     }}>
-                                                                        {strat.hedgeBet}
+                                                                        {typeof strat.hedgeBet === 'object' ? strat.hedgeBet.type : strat.hedgeBet}
                                                                     </div>
                                                                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                                                        {/* MISE - avec évolution */}
                                                                         <div style={{ 
                                                                             padding: '8px', 
                                                                             background: 'rgba(0,0,0,0.2)', 
@@ -5575,15 +5825,37 @@
                                                                             textAlign: 'center'
                                                                         }}>
                                                                             <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>MISE</div>
-                                                                            <div style={{ 
-                                                                                fontSize: '1.1rem', 
-                                                                                fontWeight: '700', 
-                                                                                fontFamily: 'Space Mono',
-                                                                                color: '#f59e0b'
-                                                                            }}>
-                                                                                {(strat.hedgeStake || 0).toLocaleString()} F
-                                                                            </div>
+                                                                            {strat.hedgeBet.oddsChanged && strat.hedgeBet.originalStake ? (
+                                                                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+                                                                                    <span style={{ 
+                                                                                        fontSize: '0.75rem', 
+                                                                                        textDecoration: 'line-through', 
+                                                                                        color: 'var(--text-muted)' 
+                                                                                    }}>
+                                                                                        {strat.hedgeBet.originalStake.toLocaleString()} F
+                                                                                    </span>
+                                                                                    <span style={{ 
+                                                                                        fontSize: '1.1rem', 
+                                                                                        fontWeight: '700', 
+                                                                                        fontFamily: 'Space Mono',
+                                                                                        color: '#f59e0b'
+                                                                                    }}>
+                                                                                        {(strat.hedgeBet.stake || strat.hedgeStake || 0).toLocaleString()} F
+                                                                                    </span>
+                                                                                </div>
+                                                                            ) : (
+                                                                                <div style={{ 
+                                                                                    fontSize: '1.1rem', 
+                                                                                    fontWeight: '700', 
+                                                                                    fontFamily: 'Space Mono',
+                                                                                    color: '#f59e0b'
+                                                                                }}>
+                                                                                    {(strat.hedgeBet.stake || strat.hedgeStake || 0).toLocaleString()} F
+                                                                                </div>
+                                                                            )}
                                                                         </div>
+                                                                        
+                                                                        {/* COTE - avec évolution */}
                                                                         <div style={{ 
                                                                             padding: '8px', 
                                                                             background: 'rgba(0,0,0,0.2)', 
@@ -5591,16 +5863,64 @@
                                                                             textAlign: 'center'
                                                                         }}>
                                                                             <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>COTE</div>
-                                                                            <div style={{ 
-                                                                                fontSize: '1.1rem', 
-                                                                                fontWeight: '700', 
-                                                                                fontFamily: 'Space Mono',
-                                                                                color: 'var(--accent-blue)'
-                                                                            }}>
-                                                                                @{(strat.hedgeOdds || 2.0).toFixed(2)}
-                                                                            </div>
+                                                                            {strat.hedgeBet.oddsChanged && strat.hedgeBet.originalOdds ? (
+                                                                                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+                                                                                    <span style={{ 
+                                                                                        fontSize: '0.75rem', 
+                                                                                        textDecoration: 'line-through', 
+                                                                                        color: 'var(--text-muted)' 
+                                                                                    }}>
+                                                                                        @{strat.hedgeBet.originalOdds.toFixed(2)}
+                                                                                    </span>
+                                                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                                                        <span style={{ 
+                                                                                            fontSize: '1.1rem', 
+                                                                                            fontWeight: '700', 
+                                                                                            fontFamily: 'Space Mono',
+                                                                                            color: strat.hedgeBet.changeDirection === 'down' ? '#10b981' : '#ef4444'
+                                                                                        }}>
+                                                                                            @{(strat.hedgeBet.odds || strat.hedgeOdds || 2.0).toFixed(2)}
+                                                                                        </span>
+                                                                                        <span style={{ fontSize: '0.8rem' }}>
+                                                                                            {strat.hedgeBet.changeDirection === 'down' ? '▼' : '▲'}
+                                                                                        </span>
+                                                                                    </div>
+                                                                                </div>
+                                                                            ) : (
+                                                                                <div style={{ 
+                                                                                    fontSize: '1.1rem', 
+                                                                                    fontWeight: '700', 
+                                                                                    fontFamily: 'Space Mono',
+                                                                                    color: 'var(--accent-blue)'
+                                                                                }}>
+                                                                                    @{(strat.hedgeBet.odds || strat.hedgeOdds || 2.0).toFixed(2)}
+                                                                                </div>
+                                                                            )}
                                                                         </div>
                                                                     </div>
+                                                                    
+                                                                    {/* Indicateur de mise à jour en temps réel */}
+                                                                    {lastOddsUpdate && (
+                                                                        <div style={{ 
+                                                                            marginTop: '8px', 
+                                                                            fontSize: '0.65rem', 
+                                                                            color: 'var(--text-muted)',
+                                                                            textAlign: 'center',
+                                                                            display: 'flex',
+                                                                            alignItems: 'center',
+                                                                            justifyContent: 'center',
+                                                                            gap: '6px'
+                                                                        }}>
+                                                                            <span style={{ 
+                                                                                width: '6px', height: '6px', 
+                                                                                borderRadius: '50%', 
+                                                                                background: isRefreshing ? '#f59e0b' : '#10b981',
+                                                                                animation: isRefreshing ? 'pulse 1s infinite' : 'none'
+                                                                            }}></span>
+                                                                            {isRefreshing ? 'Actualisation...' : `Cotes live @ ${lastOddsUpdate.toLocaleTimeString('fr-FR')}`}
+                                                                        </div>
+                                                                    )}
+                                                                    
                                                                     {strat.capitalNeeded > 0 && (
                                                                         <div style={{ 
                                                                             marginTop: '8px', 
