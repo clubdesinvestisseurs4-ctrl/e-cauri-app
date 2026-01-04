@@ -5241,9 +5241,11 @@
             const [showBreakEvenModal, setShowBreakEvenModal] = useState(false);
             const [breakEvenResult, setBreakEvenResult] = useState(null);
             const [breakEvenForm, setBreakEvenForm] = useState({
-                hedgeOptions: [] // [{option: '', odds: ''}]
+                hedgeOptions: [{ option: '', odds: '' }], // [{option: '', odds: ''}]
+                manualBets: [] // [{option: '', stake: '', odds: ''}] - Pour saisie manuelle si pas d'options
             });
             const [isCalculatingBreakEven, setIsCalculatingBreakEven] = useState(false);
+            const [showManualBetsForm, setShowManualBetsForm] = useState(false);
             
             const matchInfo = currentPrediction?.match || currentPrediction?.matchInfo || currentPrediction?.meta;
             const fixtureId = currentPrediction?.matchInfo?.fixtureId || currentPrediction?.meta?.matchId || currentPrediction?.opportunityId;
@@ -5258,11 +5260,21 @@
             
             // Options depuis la stratégie ou fallback
             const strategyOptions = strategyData?.options || [];
-            const options = strategyOptions.length > 0 
+            const rawOptions = strategyOptions.length > 0 
                 ? strategyOptions
                 : (selectedOptions.length > 0 
                     ? selectedOptions 
                     : currentPrediction?.stakes?.stakes || []);
+            
+            // Normaliser les options pour éviter les erreurs React
+            const options = rawOptions.map((opt, idx) => ({
+                option: typeof opt.option === 'string' ? opt.option : String(opt.option || opt.type || opt.name || `Option ${idx + 1}`),
+                stake: Number(opt.stake || opt.adjustedStake || opt.mise || 0),
+                odds: typeof opt.odds === 'number' ? opt.odds : parseFloat(opt.odds || opt.cote || 1.5),
+                cashoutValue: Number(opt.cashoutValue || opt.cashout || 0),
+                status: opt.status || 'pending',
+                probability: Number(opt.probability || opt.winProbability || 50)
+            })).filter(opt => opt.option); // Filtrer les options vides
             
             // Calcul des totaux
             const totalStake = options.reduce((sum, opt) => sum + (opt.stake || opt.adjustedStake || 0), 0);
@@ -5523,6 +5535,17 @@
             
             // Lancer l'analyse IA pour trouver une stratégie optimale
             const runAIOptimization = async () => {
+                // Vérifier si on a des options valides
+                if (!options || options.length === 0) {
+                    console.log('⚠️ No options available for AI optimization');
+                    setAiOptimizationResult({
+                        isOptimalFound: false,
+                        fallbackMessage: "Aucun pari détecté. Utilisez le calculateur break-even manuel.",
+                        metrics: { bestCase: 0, worstCase: 0, actualRatio: 0 }
+                    });
+                    return;
+                }
+
                 setIsAnalyzingAI(true);
                 setAiOptimizationResult(null);
                 
@@ -5530,23 +5553,36 @@
                     const token = await getValidToken();
                     if (!token) {
                         showNotification("Veuillez vous connecter", "error");
+                        setIsAnalyzingAI(false);
                         return;
                     }
 
+                    // Construire les initialBets avec validation
                     const initialBets = options.map(opt => ({
-                        option: opt.option,
-                        stake: opt.stake || opt.adjustedStake || 0,
-                        odds: opt.odds || 1.5
-                    }));
+                        option: typeof opt.option === 'string' ? opt.option : String(opt.option || 'Pari'),
+                        stake: Number(opt.stake || opt.adjustedStake || 0),
+                        odds: typeof opt.odds === 'number' ? opt.odds : parseFloat(opt.odds) || 1.5
+                    })).filter(b => b.stake > 0); // Ne garder que les paris avec mise > 0
+
+                    if (initialBets.length === 0) {
+                        setAiOptimizationResult({
+                            isOptimalFound: false,
+                            fallbackMessage: "Aucune mise valide détectée. Utilisez le calculateur break-even manuel.",
+                            metrics: { bestCase: 0, worstCase: 0, actualRatio: 0 }
+                        });
+                        setIsAnalyzingAI(false);
+                        return;
+                    }
 
                     const cashoutValues = {};
                     options.forEach(opt => {
                         if (opt.cashoutValue || opt.cashout) {
-                            cashoutValues[opt.option] = opt.cashoutValue || opt.cashout;
+                            const key = typeof opt.option === 'string' ? opt.option : String(opt.option || 'Pari');
+                            cashoutValues[key] = Number(opt.cashoutValue || opt.cashout || 0);
                         }
                     });
 
-                    console.log('🧠 Starting AI Hedging Optimization...');
+                    console.log('🧠 Starting AI Hedging Optimization...', { initialBets, cashoutValues });
                     
                     const response = await fetch(`${API_BASE_URL}/hedging/ai-optimize`, {
                         method: 'POST',
@@ -5578,11 +5614,20 @@
                         }
                     } else {
                         const error = await response.json();
-                        showNotification(error.error || "Erreur d'analyse IA", "error");
+                        console.error('AI optimization error response:', error);
+                        setAiOptimizationResult({
+                            isOptimalFound: false,
+                            fallbackMessage: error.error || "Erreur d'analyse. Utilisez le calculateur break-even manuel.",
+                            metrics: { bestCase: 0, worstCase: 0, actualRatio: 0 }
+                        });
                     }
                 } catch (error) {
                     console.error('AI optimization error:', error);
-                    showNotification("Erreur lors de l'analyse IA", "error");
+                    setAiOptimizationResult({
+                        isOptimalFound: false,
+                        fallbackMessage: "Erreur de connexion. Utilisez le calculateur break-even manuel.",
+                        metrics: { bestCase: 0, worstCase: 0, actualRatio: 0 }
+                    });
                 } finally {
                     setIsAnalyzingAI(false);
                 }
@@ -5590,31 +5635,90 @@
 
             // Ouvrir le modal break-even avec formulaire pré-rempli
             const openBreakEvenModal = () => {
-                // Pré-remplir avec les options opposées suggérées
-                const suggestedHedges = options.map(opt => {
-                    const optLower = (opt.option || '').toLowerCase();
-                    let hedgeOption = "Pari opposé";
+                // Vérifier si on a des options
+                const hasOptions = options && options.length > 0 && options.some(o => o.stake > 0);
+                
+                if (!hasOptions) {
+                    // Mode manuel: permettre à l'utilisateur d'entrer ses paris
+                    setBreakEvenForm({ 
+                        hedgeOptions: [{ option: 'Pari de couverture', odds: '' }],
+                        manualBets: [{ option: 'Pari initial', stake: '', odds: '' }]
+                    });
+                    setShowManualBetsForm(true);
+                } else {
+                    // Pré-remplir avec les options opposées suggérées
+                    const suggestedHedges = options.map(opt => {
+                        const optLower = String(opt.option || '').toLowerCase();
+                        let hedgeOption = "Pari opposé";
+                        
+                        if (optLower.includes('plus de') || optLower.includes('over') || optLower.includes('+')) {
+                            const line = optLower.match(/[\d.]+/)?.[0] || '2.5';
+                            hedgeOption = `Moins de ${line} buts`;
+                        } else if (optLower.includes('moins de') || optLower.includes('under') || optLower.includes('-')) {
+                            const line = optLower.match(/[\d.]+/)?.[0] || '2.5';
+                            hedgeOption = `Plus de ${line} buts`;
+                        } else if (optLower.includes('btts oui') || optLower.includes('deux équipes')) {
+                            hedgeOption = "BTTS Non";
+                        } else if (optLower.includes('victoire domicile') || optLower.includes('home') || optLower === '1') {
+                            hedgeOption = "Double Chance X2";
+                        } else if (optLower.includes('victoire extérieur') || optLower.includes('away') || optLower === '2') {
+                            hedgeOption = "Double Chance 1X";
+                        }
+                        
+                        return { option: hedgeOption, odds: '' };
+                    });
                     
-                    if (optLower.includes('plus de') || optLower.includes('over') || optLower.includes('+')) {
-                        const line = optLower.match(/[\d.]+/)?.[0] || '2.5';
-                        hedgeOption = `Moins de ${line} buts`;
-                    } else if (optLower.includes('moins de') || optLower.includes('under') || optLower.includes('-')) {
-                        const line = optLower.match(/[\d.]+/)?.[0] || '2.5';
-                        hedgeOption = `Plus de ${line} buts`;
-                    } else if (optLower.includes('btts oui') || optLower.includes('deux équipes')) {
-                        hedgeOption = "BTTS Non";
-                    } else if (optLower.includes('victoire domicile') || optLower.includes('home')) {
-                        hedgeOption = "Double Chance X2";
-                    } else if (optLower.includes('victoire extérieur') || optLower.includes('away')) {
-                        hedgeOption = "Double Chance 1X";
+                    // S'assurer qu'il y a au moins une option
+                    if (suggestedHedges.length === 0) {
+                        suggestedHedges.push({ option: 'Pari de couverture', odds: '' });
                     }
                     
-                    return { option: hedgeOption, odds: '' };
-                });
-                
-                setBreakEvenForm({ hedgeOptions: suggestedHedges });
+                    setBreakEvenForm({ hedgeOptions: suggestedHedges, manualBets: [] });
+                    setShowManualBetsForm(false);
+                }
                 setBreakEvenResult(null);
                 setShowBreakEvenModal(true);
+            };
+
+            // Ajouter une option de hedge au formulaire
+            const addHedgeOption = () => {
+                setBreakEvenForm(prev => ({
+                    ...prev,
+                    hedgeOptions: [...prev.hedgeOptions, { option: '', odds: '' }]
+                }));
+            };
+
+            // Supprimer une option de hedge
+            const removeHedgeOption = (index) => {
+                setBreakEvenForm(prev => ({
+                    ...prev,
+                    hedgeOptions: prev.hedgeOptions.filter((_, i) => i !== index)
+                }));
+            };
+
+            // Ajouter un pari manuel
+            const addManualBet = () => {
+                setBreakEvenForm(prev => ({
+                    ...prev,
+                    manualBets: [...(prev.manualBets || []), { option: '', stake: '', odds: '' }]
+                }));
+            };
+
+            // Supprimer un pari manuel
+            const removeManualBet = (index) => {
+                setBreakEvenForm(prev => ({
+                    ...prev,
+                    manualBets: (prev.manualBets || []).filter((_, i) => i !== index)
+                }));
+            };
+
+            // Mettre à jour un pari manuel
+            const updateManualBet = (index, field, value) => {
+                setBreakEvenForm(prev => {
+                    const updated = [...(prev.manualBets || [])];
+                    updated[index] = { ...updated[index], [field]: value };
+                    return { ...prev, manualBets: updated };
+                });
             };
 
             // Mettre à jour une option de hedge dans le formulaire
@@ -5628,8 +5732,8 @@
 
             // Calculer le break-even manuellement
             const calculateBreakEven = async () => {
-                // Validation
-                const validHedges = breakEvenForm.hedgeOptions.filter(h => h.option && h.odds && parseFloat(h.odds) > 1);
+                // Validation des cotes de hedge
+                const validHedges = (breakEvenForm.hedgeOptions || []).filter(h => h.option && h.odds && parseFloat(h.odds) > 1);
                 if (validHedges.length === 0) {
                     showNotification("Veuillez entrer au moins une cote de couverture valide (> 1.00)", "error");
                     return;
@@ -5641,14 +5745,65 @@
                     const token = await getValidToken();
                     if (!token) {
                         showNotification("Veuillez vous connecter", "error");
+                        setIsCalculatingBreakEven(false);
                         return;
                     }
 
-                    const initialBets = options.map(opt => ({
-                        option: opt.option,
-                        stake: opt.stake || opt.adjustedStake || 0,
-                        odds: opt.odds || 1.5
-                    }));
+                    // Construire les initialBets à partir des options, des paris manuels, ou de la saisie
+                    let initialBets = [];
+                    
+                    // Priorité 1: Paris manuels saisis dans le formulaire
+                    if (breakEvenForm.manualBets && breakEvenForm.manualBets.length > 0) {
+                        const validManualBets = breakEvenForm.manualBets.filter(b => 
+                            b.option && b.stake && parseFloat(b.stake) > 0
+                        );
+                        if (validManualBets.length > 0) {
+                            initialBets = validManualBets.map(b => ({
+                                option: String(b.option),
+                                stake: parseFloat(b.stake),
+                                odds: parseFloat(b.odds) || 1.5
+                            }));
+                        }
+                    }
+                    
+                    // Priorité 2: Options existantes
+                    if (initialBets.length === 0 && options && options.length > 0) {
+                        initialBets = options
+                            .filter(opt => opt.stake > 0)
+                            .map(opt => ({
+                                option: String(opt.option),
+                                stake: Number(opt.stake),
+                                odds: Number(opt.odds) || 1.5
+                            }));
+                    }
+                    
+                    // Priorité 3: Saisie manuelle du total (champ input)
+                    if (initialBets.length === 0) {
+                        const manualInput = document.getElementById('manualTotalStake');
+                        const manualTotal = manualInput ? parseFloat(manualInput.value) || 0 : 0;
+                        
+                        if (manualTotal <= 0) {
+                            showNotification("Veuillez entrer le total de vos mises initiales", "error");
+                            setIsCalculatingBreakEven(false);
+                            return;
+                        }
+                        
+                        initialBets = [{ 
+                            option: 'Mise initiale', 
+                            stake: manualTotal, 
+                            odds: 1.5 
+                        }];
+                    }
+
+                    // Vérifier que le total n'est pas 0
+                    const calculatedTotal = initialBets.reduce((sum, b) => sum + (b.stake || 0), 0);
+                    if (calculatedTotal <= 0) {
+                        showNotification("Le total des mises doit être supérieur à 0", "error");
+                        setIsCalculatingBreakEven(false);
+                        return;
+                    }
+
+                    console.log('📊 Calculating break-even with:', { initialBets, validHedges });
 
                     const response = await fetch(`${API_BASE_URL}/hedging/calculate-breakeven-manual`, {
                         method: 'POST',
@@ -5659,7 +5814,7 @@
                         body: JSON.stringify({
                             initialBets,
                             hedgeOptions: validHedges.map(h => ({
-                                option: h.option,
+                                option: String(h.option),
                                 odds: parseFloat(h.odds)
                             }))
                         })
@@ -5676,7 +5831,7 @@
                     }
                 } catch (error) {
                     console.error('Break-even calculation error:', error);
-                    showNotification("Erreur de calcul", "error");
+                    showNotification("Erreur de calcul: " + error.message, "error");
                 } finally {
                     setIsCalculatingBreakEven(false);
                 }
@@ -6240,7 +6395,7 @@
                                         {isAnalyzingAI 
                                             ? 'Recherche de la meilleure stratégie...'
                                             : (aiOptimizationResult?.isOptimalFound 
-                                                ? `Ratio gain/perte: ${aiOptimizationResult?.metrics?.actualRatio}x (cible: 1.5x)`
+                                                ? 'Ratio gain/perte: ' + String(aiOptimizationResult?.metrics?.actualRatio || 0) + 'x (cible: 1.5x)'
                                                 : 'Objectif: Gain potentiel ≥ 1.5x la perte potentielle')}
                                     </p>
                                 </div>
@@ -6279,11 +6434,11 @@
                             {!isAnalyzingAI && aiOptimizationResult?.isOptimalFound && aiOptimizationResult?.optimalStrategy && (
                                 <div>
                                     <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-                                        {aiOptimizationResult.optimalStrategy.description}
+                                        {String(aiOptimizationResult.optimalStrategy.description || 'Stratégie de couverture optimale')}
                                     </p>
                                     
                                     {/* Hedge Bets à placer */}
-                                    {aiOptimizationResult.optimalStrategy.hedgeBets?.map((hedge, idx) => (
+                                    {Array.isArray(aiOptimizationResult.optimalStrategy.hedgeBets) && aiOptimizationResult.optimalStrategy.hedgeBets.map((hedge, idx) => (
                                         <div key={idx} style={{
                                             padding: '12px',
                                             background: 'rgba(16, 185, 129, 0.15)',
@@ -6292,14 +6447,14 @@
                                             border: '1px solid rgba(16, 185, 129, 0.3)'
                                         }}>
                                             <div style={{ fontSize: '0.85rem', color: '#10b981', fontWeight: '600', marginBottom: '4px' }}>
-                                                🎯 {hedge.option}
+                                                🎯 {String(hedge.option || 'Pari de couverture')}
                                             </div>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-gold)', fontSize: '1.1rem', fontWeight: '700' }}>
-                                                    {hedge.stake?.toLocaleString()} FCFA
+                                                    {Number(hedge.stake || 0).toLocaleString()} FCFA
                                                 </span>
                                                 <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                                                    @ {hedge.odds?.toFixed(2)}
+                                                    @ {Number(hedge.odds || 2).toFixed(2)}
                                                 </span>
                                             </div>
                                         </div>
@@ -6310,18 +6465,18 @@
                                         <div style={{ padding: '10px', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '8px', textAlign: 'center' }}>
                                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>🎉 Meilleur cas</div>
                                             <div style={{ fontFamily: 'Space Mono', color: '#10b981', fontWeight: '700', fontSize: '1.1rem' }}>
-                                                +{aiOptimizationResult.metrics?.bestCase?.toLocaleString()} F
+                                                +{Number(aiOptimizationResult.metrics?.bestCase || 0).toLocaleString()} F
                                             </div>
                                         </div>
                                         <div style={{ padding: '10px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '8px', textAlign: 'center' }}>
                                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>😔 Pire cas</div>
                                             <div style={{ 
                                                 fontFamily: 'Space Mono', 
-                                                color: aiOptimizationResult.metrics?.worstCase >= 0 ? '#10b981' : '#ef4444', 
+                                                color: Number(aiOptimizationResult.metrics?.worstCase || 0) >= 0 ? '#10b981' : '#ef4444', 
                                                 fontWeight: '700',
                                                 fontSize: '1.1rem'
                                             }}>
-                                                {aiOptimizationResult.metrics?.worstCase >= 0 ? '+' : ''}{aiOptimizationResult.metrics?.worstCase?.toLocaleString()} F
+                                                {Number(aiOptimizationResult.metrics?.worstCase || 0) >= 0 ? '+' : ''}{Number(aiOptimizationResult.metrics?.worstCase || 0).toLocaleString()} F
                                             </div>
                                         </div>
                                     </div>
@@ -6350,10 +6505,10 @@
                                         marginBottom: '12px'
                                     }}>
                                         <p style={{ color: '#f59e0b', fontSize: '0.85rem', marginBottom: '8px' }}>
-                                            ⚠️ {aiOptimizationResult.fallbackMessage || "Aucune stratégie avec ratio ≥ 1.5x trouvée"}
+                                            ⚠️ {String(aiOptimizationResult.fallbackMessage || "Aucune stratégie avec ratio ≥ 1.5x trouvée")}
                                         </p>
                                         <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', margin: 0 }}>
-                                            Ratio actuel: {aiOptimizationResult.metrics?.actualRatio}x | Meilleur: {aiOptimizationResult.metrics?.bestCase?.toLocaleString()}F | Pire: {aiOptimizationResult.metrics?.worstCase?.toLocaleString()}F
+                                            {'Ratio: ' + String(aiOptimizationResult.metrics?.actualRatio || 0) + 'x | Meilleur: ' + Number(aiOptimizationResult.metrics?.bestCase || 0).toLocaleString() + 'F | Pire: ' + Number(aiOptimizationResult.metrics?.worstCase || 0).toLocaleString() + 'F'}
                                         </p>
                                     </div>
                                     
@@ -6529,34 +6684,200 @@
                                         <h4 style={{ fontSize: '0.85rem', marginBottom: '8px', color: 'var(--accent-blue)' }}>
                                             📋 Vos paris initiaux
                                         </h4>
-                                        {options.map((opt, idx) => (
-                                            <div key={idx} style={{
-                                                display: 'flex',
-                                                justifyContent: 'space-between',
-                                                padding: '6px 0',
-                                                borderBottom: idx < options.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
-                                                fontSize: '0.8rem'
+                                        {options && options.length > 0 ? (
+                                            <>
+                                                {options.map((opt, idx) => {
+                                                    // S'assurer que les valeurs sont des primitives
+                                                    const optionName = typeof opt.option === 'string' ? opt.option : String(opt.option || 'Option ' + (idx + 1));
+                                                    const stake = Number(opt.stake || opt.adjustedStake || 0);
+                                                    const odds = typeof opt.odds === 'number' ? opt.odds : parseFloat(opt.odds) || 1.5;
+                                                    
+                                                    return (
+                                                        <div key={idx} style={{
+                                                            display: 'flex',
+                                                            justifyContent: 'space-between',
+                                                            padding: '6px 0',
+                                                            borderBottom: idx < options.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
+                                                            fontSize: '0.8rem'
+                                                        }}>
+                                                            <span style={{ color: 'var(--text-secondary)' }}>{optionName}</span>
+                                                            <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-gold)' }}>
+                                                                {stake.toLocaleString()} F @ {odds.toFixed(2)}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                                <div style={{
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between',
+                                                    paddingTop: '8px',
+                                                    marginTop: '8px',
+                                                    borderTop: '1px solid rgba(255,255,255,0.2)',
+                                                    fontWeight: '600'
+                                                }}>
+                                                    <span>Total investi</span>
+                                                    <span style={{ fontFamily: 'Space Mono', color: '#f59e0b' }}>
+                                                        {totalStake.toLocaleString()} FCFA
+                                                    </span>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <div style={{ 
+                                                padding: '12px', 
+                                                background: 'rgba(245, 158, 11, 0.1)', 
+                                                borderRadius: '8px',
+                                                textAlign: 'center'
                                             }}>
-                                                <span style={{ color: 'var(--text-secondary)' }}>{opt.option}</span>
-                                                <span style={{ fontFamily: 'Space Mono', color: 'var(--accent-gold)' }}>
-                                                    {(opt.stake || opt.adjustedStake || 0).toLocaleString()} F @ {opt.odds}
-                                                </span>
+                                                <p style={{ color: '#f59e0b', fontSize: '0.8rem', margin: 0 }}>
+                                                    ⚠️ Aucun pari détecté
+                                                </p>
+                                                <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '4px', marginBottom: 0 }}>
+                                                    Entrez manuellement vos mises ci-dessous
+                                                </p>
                                             </div>
-                                        ))}
-                                        <div style={{
-                                            display: 'flex',
-                                            justifyContent: 'space-between',
-                                            paddingTop: '8px',
-                                            marginTop: '8px',
-                                            borderTop: '1px solid rgba(255,255,255,0.2)',
-                                            fontWeight: '600'
-                                        }}>
-                                            <span>Total investi</span>
-                                            <span style={{ fontFamily: 'Space Mono', color: '#f59e0b' }}>
-                                                {totalStake.toLocaleString()} FCFA
-                                            </span>
-                                        </div>
+                                        )}
                                     </div>
+
+                                    {/* Saisie manuelle du total investi si pas d'options ou showManualBetsForm */}
+                                    {(showManualBetsForm || !options || options.length === 0 || totalStake === 0) && (
+                                        <div style={{ marginBottom: '16px' }}>
+                                            <h4 style={{ fontSize: '0.85rem', marginBottom: '12px', color: 'var(--accent-blue)' }}>
+                                                💰 Vos paris initiaux (saisie manuelle)
+                                            </h4>
+                                            
+                                            {/* Liste des paris manuels */}
+                                            {(breakEvenForm.manualBets || []).map((bet, idx) => (
+                                                <div key={idx} style={{
+                                                    padding: '12px',
+                                                    background: 'rgba(59, 130, 246, 0.05)',
+                                                    borderRadius: '10px',
+                                                    marginBottom: '10px',
+                                                    border: '1px solid rgba(59, 130, 246, 0.2)',
+                                                    position: 'relative'
+                                                }}>
+                                                    {(breakEvenForm.manualBets || []).length > 1 && (
+                                                        <button
+                                                            onClick={() => removeManualBet(idx)}
+                                                            style={{
+                                                                position: 'absolute',
+                                                                top: '8px',
+                                                                right: '8px',
+                                                                width: '24px',
+                                                                height: '24px',
+                                                                borderRadius: '50%',
+                                                                background: 'rgba(239, 68, 68, 0.2)',
+                                                                border: 'none',
+                                                                color: '#ef4444',
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.8rem'
+                                                            }}
+                                                        >
+                                                            ✕
+                                                        </button>
+                                                    )}
+                                                    <div style={{ marginBottom: '8px' }}>
+                                                        <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                                                            Nom du pari #{idx + 1}
+                                                        </label>
+                                                        <input
+                                                            type="text"
+                                                            value={bet.option || ''}
+                                                            onChange={(e) => updateManualBet(idx, 'option', e.target.value)}
+                                                            placeholder="Ex: Plus de 2.5 buts"
+                                                            style={{
+                                                                width: '100%',
+                                                                padding: '10px 12px',
+                                                                background: 'var(--bg-secondary)',
+                                                                border: '1px solid var(--border-color)',
+                                                                borderRadius: '8px',
+                                                                color: 'var(--text-primary)',
+                                                                fontSize: '0.9rem'
+                                                            }}
+                                                        />
+                                                    </div>
+                                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                                                        <div>
+                                                            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                                                                Mise (FCFA)
+                                                            </label>
+                                                            <input
+                                                                type="number"
+                                                                value={bet.stake || ''}
+                                                                onChange={(e) => updateManualBet(idx, 'stake', e.target.value)}
+                                                                placeholder="5000"
+                                                                style={{
+                                                                    width: '100%',
+                                                                    padding: '10px 12px',
+                                                                    background: 'var(--bg-secondary)',
+                                                                    border: '1px solid var(--border-color)',
+                                                                    borderRadius: '8px',
+                                                                    color: 'var(--accent-gold)',
+                                                                    fontSize: '1rem',
+                                                                    fontFamily: 'Space Mono'
+                                                                }}
+                                                            />
+                                                        </div>
+                                                        <div>
+                                                            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                                                                Cote jouée
+                                                            </label>
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                value={bet.odds || ''}
+                                                                onChange={(e) => updateManualBet(idx, 'odds', e.target.value)}
+                                                                placeholder="1.85"
+                                                                style={{
+                                                                    width: '100%',
+                                                                    padding: '10px 12px',
+                                                                    background: 'var(--bg-secondary)',
+                                                                    border: '1px solid var(--border-color)',
+                                                                    borderRadius: '8px',
+                                                                    color: 'var(--accent-blue)',
+                                                                    fontSize: '1rem',
+                                                                    fontFamily: 'Space Mono'
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            
+                                            {/* Bouton ajouter un pari */}
+                                            <button
+                                                onClick={addManualBet}
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '10px',
+                                                    background: 'transparent',
+                                                    border: '1px dashed rgba(59, 130, 246, 0.5)',
+                                                    borderRadius: '8px',
+                                                    color: 'var(--accent-blue)',
+                                                    cursor: 'pointer',
+                                                    fontSize: '0.85rem'
+                                                }}
+                                            >
+                                                + Ajouter un pari initial
+                                            </button>
+                                            
+                                            {/* Résumé total */}
+                                            {(breakEvenForm.manualBets || []).some(b => b.stake) && (
+                                                <div style={{
+                                                    marginTop: '12px',
+                                                    padding: '10px',
+                                                    background: 'rgba(59, 130, 246, 0.1)',
+                                                    borderRadius: '8px',
+                                                    display: 'flex',
+                                                    justifyContent: 'space-between'
+                                                }}>
+                                                    <span style={{ color: 'var(--text-secondary)' }}>Total des mises:</span>
+                                                    <span style={{ fontFamily: 'Space Mono', fontWeight: '700', color: 'var(--accent-gold)' }}>
+                                                        {(breakEvenForm.manualBets || []).reduce((sum, b) => sum + (parseFloat(b.stake) || 0), 0).toLocaleString()} FCFA
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
 
                                     {/* Formulaire: Cotes de couverture */}
                                     <div style={{ marginBottom: '16px' }}>
@@ -6567,59 +6888,112 @@
                                             Consultez votre bookmaker pour les cotes actuelles des options opposées
                                         </p>
                                         
-                                        {breakEvenForm.hedgeOptions.map((hedge, idx) => (
-                                            <div key={idx} style={{
-                                                padding: '12px',
+                                        {breakEvenForm.hedgeOptions && breakEvenForm.hedgeOptions.length > 0 ? (
+                                            breakEvenForm.hedgeOptions.map((hedge, idx) => (
+                                                <div key={idx} style={{
+                                                    padding: '12px',
+                                                    background: 'rgba(255,255,255,0.03)',
+                                                    borderRadius: '10px',
+                                                    marginBottom: '10px',
+                                                    border: '1px solid var(--border-color)',
+                                                    position: 'relative'
+                                                }}>
+                                                    {breakEvenForm.hedgeOptions.length > 1 && (
+                                                        <button
+                                                            onClick={() => removeHedgeOption(idx)}
+                                                            style={{
+                                                                position: 'absolute',
+                                                                top: '8px',
+                                                                right: '8px',
+                                                                width: '24px',
+                                                                height: '24px',
+                                                                borderRadius: '50%',
+                                                                background: 'rgba(239, 68, 68, 0.2)',
+                                                                border: 'none',
+                                                                color: '#ef4444',
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.8rem'
+                                                            }}
+                                                        >
+                                                            ✕
+                                                        </button>
+                                                    )}
+                                                    <div style={{ marginBottom: '8px' }}>
+                                                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                                                            Option de couverture #{idx + 1}
+                                                        </label>
+                                                        <input
+                                                            type="text"
+                                                            value={hedge.option || ''}
+                                                            onChange={(e) => updateHedgeOption(idx, 'option', e.target.value)}
+                                                            placeholder="Ex: Moins de 2.5 buts"
+                                                            style={{
+                                                                width: '100%',
+                                                                padding: '10px 12px',
+                                                                background: 'var(--bg-secondary)',
+                                                                border: '1px solid var(--border-color)',
+                                                                borderRadius: '8px',
+                                                                color: 'var(--text-primary)',
+                                                                fontSize: '0.9rem'
+                                                            }}
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                                                            Cote actuelle (live)
+                                                        </label>
+                                                        <input
+                                                            type="number"
+                                                            step="0.01"
+                                                            min="1.01"
+                                                            value={hedge.odds || ''}
+                                                            onChange={(e) => updateHedgeOption(idx, 'odds', e.target.value)}
+                                                            placeholder="Ex: 2.10"
+                                                            style={{
+                                                                width: '100%',
+                                                                padding: '10px 12px',
+                                                                background: 'var(--bg-secondary)',
+                                                                border: '1px solid var(--border-color)',
+                                                                borderRadius: '8px',
+                                                                color: 'var(--accent-gold)',
+                                                                fontSize: '1rem',
+                                                                fontFamily: 'Space Mono'
+                                                            }}
+                                                        />
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <div style={{ 
+                                                padding: '20px', 
+                                                textAlign: 'center', 
                                                 background: 'rgba(255,255,255,0.03)',
                                                 borderRadius: '10px',
-                                                marginBottom: '10px',
-                                                border: '1px solid var(--border-color)'
+                                                border: '1px dashed var(--border-color)'
                                             }}>
-                                                <div style={{ marginBottom: '8px' }}>
-                                                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                                                        Option de couverture
-                                                    </label>
-                                                    <input
-                                                        type="text"
-                                                        value={hedge.option}
-                                                        onChange={(e) => updateHedgeOption(idx, 'option', e.target.value)}
-                                                        placeholder="Ex: Moins de 2.5 buts"
-                                                        style={{
-                                                            width: '100%',
-                                                            padding: '10px 12px',
-                                                            background: 'var(--bg-secondary)',
-                                                            border: '1px solid var(--border-color)',
-                                                            borderRadius: '8px',
-                                                            color: 'var(--text-primary)',
-                                                            fontSize: '0.9rem'
-                                                        }}
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                                                        Cote actuelle (live)
-                                                    </label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        min="1.01"
-                                                        value={hedge.odds}
-                                                        onChange={(e) => updateHedgeOption(idx, 'odds', e.target.value)}
-                                                        placeholder="Ex: 2.10"
-                                                        style={{
-                                                            width: '100%',
-                                                            padding: '10px 12px',
-                                                            background: 'var(--bg-secondary)',
-                                                            border: '1px solid var(--border-color)',
-                                                            borderRadius: '8px',
-                                                            color: 'var(--accent-gold)',
-                                                            fontSize: '1rem',
-                                                            fontFamily: 'Space Mono'
-                                                        }}
-                                                    />
-                                                </div>
+                                                <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                                    Cliquez sur "+" pour ajouter une option de couverture
+                                                </p>
                                             </div>
-                                        ))}
+                                        )}
+                                        
+                                        {/* Bouton ajouter option */}
+                                        <button
+                                            onClick={addHedgeOption}
+                                            style={{
+                                                width: '100%',
+                                                padding: '10px',
+                                                marginTop: '8px',
+                                                background: 'transparent',
+                                                border: '1px dashed var(--border-color)',
+                                                borderRadius: '8px',
+                                                color: 'var(--text-secondary)',
+                                                cursor: 'pointer',
+                                                fontSize: '0.85rem'
+                                            }}
+                                        >
+                                            + Ajouter une option de couverture
+                                        </button>
                                     </div>
 
                                     {/* Bouton calculer */}
@@ -6682,7 +7056,7 @@
                                                         Mise de couverture à placer:
                                                     </div>
                                                     <div style={{ fontSize: '0.9rem', color: '#10b981', fontWeight: '600', marginBottom: '8px' }}>
-                                                        🎯 {breakEvenResult.recommendedHedge.option}
+                                                        🎯 {String(breakEvenResult.recommendedHedge.option || 'Pari de couverture')}
                                                     </div>
                                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                         <span style={{ 
@@ -6691,41 +7065,43 @@
                                                             fontWeight: '700',
                                                             color: 'var(--accent-gold)' 
                                                         }}>
-                                                            {breakEvenResult.recommendedHedge.stake?.toLocaleString()} FCFA
+                                                            {Number(breakEvenResult.recommendedHedge.stake || 0).toLocaleString()} FCFA
                                                         </span>
                                                         <span style={{ color: 'var(--text-muted)' }}>
-                                                            @ {breakEvenResult.recommendedHedge.odds?.toFixed(2)}
+                                                            @ {Number(breakEvenResult.recommendedHedge.odds || 2).toFixed(2)}
                                                         </span>
                                                     </div>
                                                 </div>
                                             )}
 
                                             {/* Scénarios */}
-                                            <div style={{ marginBottom: '12px' }}>
-                                                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                                                    Scénarios possibles:
-                                                </div>
-                                                {breakEvenResult.scenarios?.map((scenario, idx) => (
-                                                    <div key={idx} style={{
-                                                        display: 'flex',
-                                                        justifyContent: 'space-between',
-                                                        padding: '8px',
-                                                        background: 'rgba(0,0,0,0.2)',
-                                                        borderRadius: '6px',
-                                                        marginBottom: '6px',
-                                                        fontSize: '0.8rem'
-                                                    }}>
-                                                        <span>{scenario.name}</span>
-                                                        <span style={{ 
-                                                            fontFamily: 'Space Mono',
-                                                            color: scenario.result >= 0 ? '#10b981' : '#ef4444',
-                                                            fontWeight: '600'
-                                                        }}>
-                                                            {scenario.result >= 0 ? '+' : ''}{scenario.result?.toLocaleString()} F
-                                                        </span>
+                                            {Array.isArray(breakEvenResult.scenarios) && breakEvenResult.scenarios.length > 0 && (
+                                                <div style={{ marginBottom: '12px' }}>
+                                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                                                        Scénarios possibles:
                                                     </div>
-                                                ))}
-                                            </div>
+                                                    {breakEvenResult.scenarios.map((scenario, idx) => (
+                                                        <div key={idx} style={{
+                                                            display: 'flex',
+                                                            justifyContent: 'space-between',
+                                                            padding: '8px',
+                                                            background: 'rgba(0,0,0,0.2)',
+                                                            borderRadius: '6px',
+                                                            marginBottom: '6px',
+                                                            fontSize: '0.8rem'
+                                                        }}>
+                                                            <span>{String(scenario.name || 'Scénario ' + (idx + 1))}</span>
+                                                            <span style={{ 
+                                                                fontFamily: 'Space Mono',
+                                                                color: Number(scenario.result || 0) >= 0 ? '#10b981' : '#ef4444',
+                                                                fontWeight: '600'
+                                                            }}>
+                                                                {Number(scenario.result || 0) >= 0 ? '+' : ''}{Number(scenario.result || 0).toLocaleString()} F
+                                                            </span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
 
                                             {/* Résumé */}
                                             <div style={{ 
@@ -6736,11 +7112,11 @@
                                                 textAlign: 'center'
                                             }}>
                                                 <p style={{ color: breakEvenResult.isBreakEven ? '#10b981' : '#f59e0b', margin: 0 }}>
-                                                    {breakEvenResult.recommendation}
+                                                    {String(breakEvenResult.recommendation || 'Stratégie calculée')}
                                                 </p>
                                                 <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '4px', marginBottom: 0 }}>
                                                     Capital total requis: <strong style={{ color: 'var(--accent-gold)' }}>
-                                                        {breakEvenResult.totalCapitalNeeded?.toLocaleString()} FCFA
+                                                        {Number(breakEvenResult.totalCapitalNeeded || 0).toLocaleString()} FCFA
                                                     </strong>
                                                 </p>
                                             </div>
