@@ -5237,7 +5237,7 @@
             
             // ========== ÉTATS POUR LA MODAL BREAK-EVEN MANUEL ==========
             const [showBreakEvenModal, setShowBreakEvenModal] = useState(false);
-            const [breakEvenBets, setBreakEvenBets] = useState([]);
+            const [breakEvenBets, setBreakEvenBets] = useState([{ option: '', stake: '', odds: '' }]);
             const [breakEvenHedgeOptions, setBreakEvenHedgeOptions] = useState([{ type: '', odds: '' }]);
             const [breakEvenResult, setBreakEvenResult] = useState(null);
             const [calculatingBreakEven, setCalculatingBreakEven] = useState(false);
@@ -5273,28 +5273,58 @@
             const totalCashout = options.reduce((sum, opt) => sum + (opt.cashoutValue || opt.cashout || 0), 0);
 
             // ========== INITIALISER LES PARIS POUR BREAK-EVEN ==========
+            // Charger les options existantes quand la modal s'ouvre
             useEffect(() => {
-                if (options.length > 0 && breakEvenBets.length === 0) {
-                    setBreakEvenBets(options.map(opt => ({
-                        option: opt.option || opt.name || 'Pari',
-                        stake: opt.stake || opt.actualStake || 0,
-                        odds: opt.odds || 1.5
-                    })));
+                if (showBreakEvenModal && options.length > 0) {
+                    // Pré-remplir avec les paris existants s'ils ont des valeurs
+                    const existingBets = options.filter(opt => opt.stake || opt.actualStake).map(opt => ({
+                        option: opt.option || opt.name || '',
+                        stake: opt.stake || opt.actualStake || '',
+                        odds: opt.odds || ''
+                    }));
+                    if (existingBets.length > 0) {
+                        setBreakEvenBets(existingBets);
+                    }
                 }
-            }, [options]);
+            }, [showBreakEvenModal]);
+
+            // ========== AJOUTER/SUPPRIMER PARIS ORIGINAUX ==========
+            const addBet = () => {
+                setBreakEvenBets([...breakEvenBets, { option: '', stake: '', odds: '' }]);
+            };
+            
+            const removeBet = (index) => {
+                if (breakEvenBets.length > 1) {
+                    setBreakEvenBets(breakEvenBets.filter((_, i) => i !== index));
+                }
+            };
 
             // ========== FONCTION DE CALCUL BREAK-EVEN MANUEL ==========
             const calculateManualBreakEven = async () => {
-                // Valider les données
-                const validBets = breakEvenBets.filter(b => b.stake > 0 && b.odds >= 1);
-                const validHedges = breakEvenHedgeOptions.filter(h => h.type && h.odds >= 1);
+                // Valider les données - convertir en nombres
+                const validBets = breakEvenBets
+                    .map(b => ({
+                        option: b.option || 'Pari',
+                        stake: parseFloat(b.stake) || 0,
+                        odds: parseFloat(b.odds) || 0
+                    }))
+                    .filter(b => b.stake > 0 && b.odds >= 1);
+                    
+                const validHedges = breakEvenHedgeOptions
+                    .map(h => ({
+                        type: h.type || 'Hedge',
+                        odds: parseFloat(h.odds) || 0
+                    }))
+                    .filter(h => h.odds >= 1);
+                
+                console.log('📊 Break-even validation:', { validBets, validHedges, breakEvenBets, breakEvenHedgeOptions });
                 
                 if (validBets.length === 0) {
-                    showNotification('Veuillez renseigner au moins un pari avec une mise', 'error');
+                    showNotification('Veuillez renseigner au moins un pari avec une mise et une cote valide', 'error');
                     return;
                 }
                 if (validHedges.length === 0) {
-                    showNotification('Veuillez renseigner au moins une option de couverture avec une cote', 'error');
+                    showNotification('Veuillez renseigner au moins une option de couverture avec une cote valide', 'error');
                     return;
                 }
                 
@@ -5342,13 +5372,13 @@
             
             const updateHedgeOption = (index, field, value) => {
                 const updated = [...breakEvenHedgeOptions];
-                updated[index][field] = field === 'odds' ? parseFloat(value) || '' : value;
+                updated[index][field] = value; // Garder la valeur brute
                 setBreakEvenHedgeOptions(updated);
             };
             
             const updateBet = (index, field, value) => {
                 const updated = [...breakEvenBets];
-                updated[index][field] = field === 'stake' || field === 'odds' ? parseFloat(value) || '' : value;
+                updated[index][field] = value; // Garder la valeur brute
                 setBreakEvenBets(updated);
             };
 
@@ -6402,22 +6432,61 @@
                                         <h4 style={{ marginBottom: '12px', color: 'var(--accent-gold)', fontSize: '0.9rem' }}>
                                             📋 Vos paris originaux
                                         </h4>
+                                        
+                                        {/* Message si aucun pari */}
+                                        {breakEvenBets.length === 0 && (
+                                            <div style={{
+                                                padding: '16px',
+                                                background: 'rgba(245, 158, 11, 0.1)',
+                                                border: '1px dashed rgba(245, 158, 11, 0.5)',
+                                                borderRadius: '10px',
+                                                marginBottom: '10px',
+                                                textAlign: 'center'
+                                            }}>
+                                                <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', margin: 0 }}>
+                                                    Aucun pari renseigné. Ajoutez vos paris originaux ci-dessous.
+                                                </p>
+                                            </div>
+                                        )}
+                                        
                                         {breakEvenBets.map((bet, idx) => (
                                             <div key={idx} style={{
                                                 padding: '12px',
-                                                background: 'rgba(0,0,0,0.2)',
+                                                background: 'rgba(245, 158, 11, 0.1)',
                                                 borderRadius: '10px',
-                                                marginBottom: '10px'
+                                                marginBottom: '10px',
+                                                border: '1px solid rgba(245, 158, 11, 0.3)'
                                             }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                                    <label style={{ fontSize: '0.8rem', color: 'var(--accent-gold)', fontWeight: '600' }}>
+                                                        Pari {idx + 1}
+                                                    </label>
+                                                    {breakEvenBets.length > 1 && (
+                                                        <button
+                                                            onClick={() => removeBet(idx)}
+                                                            style={{
+                                                                background: 'rgba(239, 68, 68, 0.2)',
+                                                                border: 'none',
+                                                                borderRadius: '6px',
+                                                                padding: '4px 8px',
+                                                                color: '#ef4444',
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.75rem'
+                                                            }}
+                                                        >
+                                                            🗑️ Supprimer
+                                                        </button>
+                                                    )}
+                                                </div>
                                                 <div style={{ marginBottom: '8px' }}>
                                                     <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                                                        Option {idx + 1}
+                                                        Nom de l'option (optionnel)
                                                     </label>
                                                     <input
                                                         type="text"
                                                         value={bet.option}
                                                         onChange={(e) => updateBet(idx, 'option', e.target.value)}
-                                                        placeholder="Ex: Victoire PSG"
+                                                        placeholder="Ex: Victoire PSG, Over 2.5..."
                                                         style={{
                                                             width: '100%',
                                                             padding: '10px',
@@ -6432,7 +6501,7 @@
                                                 <div style={{ display: 'flex', gap: '10px' }}>
                                                     <div style={{ flex: 1 }}>
                                                         <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                                                            Mise (FCFA)
+                                                            Mise (FCFA) *
                                                         </label>
                                                         <input
                                                             type="number"
@@ -6452,7 +6521,7 @@
                                                     </div>
                                                     <div style={{ flex: 1 }}>
                                                         <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                                                            Cote
+                                                            Cote *
                                                         </label>
                                                         <input
                                                             type="number"
@@ -6474,6 +6543,23 @@
                                                 </div>
                                             </div>
                                         ))}
+                                        
+                                        {/* Bouton ajouter un pari */}
+                                        <button
+                                            onClick={addBet}
+                                            style={{
+                                                width: '100%',
+                                                padding: '10px',
+                                                background: 'rgba(245, 158, 11, 0.1)',
+                                                border: '1px dashed rgba(245, 158, 11, 0.5)',
+                                                borderRadius: '8px',
+                                                color: 'var(--accent-gold)',
+                                                cursor: 'pointer',
+                                                fontSize: '0.85rem'
+                                            }}
+                                        >
+                                            + Ajouter un pari original
+                                        </button>
                                     </div>
                                     
                                     {/* Section: Options de couverture */}
