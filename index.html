@@ -3780,17 +3780,75 @@
                                             {/* === STATUT: ANALYZED (en attente de validation) === */}
                                             {pred.status === 'analyzed' && (
                                                 <div style={{ marginBottom: '16px' }}>
+                                                    {/* Avertissement si l'IA a échoué */}
+                                                    {pred.aiError && (
+                                                        <div style={{ 
+                                                            padding: '12px', 
+                                                            background: 'rgba(239, 68, 68, 0.15)', 
+                                                            borderRadius: '10px',
+                                                            marginBottom: '12px',
+                                                            border: '1px solid rgba(239, 68, 68, 0.3)'
+                                                        }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                                                                <span style={{ fontSize: '1.2rem' }}>⚠️</span>
+                                                                <span style={{ color: '#f59e0b', fontWeight: '600', fontSize: '0.9rem' }}>
+                                                                    Analyse partielle
+                                                                </span>
+                                                            </div>
+                                                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', margin: '0 0 10px' }}>
+                                                                L'analyse IA a rencontré un problème ({pred.aiError?.message || 'Erreur de connexion'}). 
+                                                                Les résultats sont basés sur des calculs de secours.
+                                                            </p>
+                                                            {pred.canRetry && (
+                                                                <button 
+                                                                    className="btn btn-secondary"
+                                                                    style={{ 
+                                                                        width: '100%', 
+                                                                        padding: '10px',
+                                                                        background: 'rgba(245, 158, 11, 0.2)',
+                                                                        border: '1px solid rgba(245, 158, 11, 0.5)',
+                                                                        fontSize: '0.85rem'
+                                                                    }}
+                                                                    onClick={async () => {
+                                                                        showNotification('Relance de l\'analyse...', 'info');
+                                                                        try {
+                                                                            const token = await getValidToken();
+                                                                            const response = await fetch(`${API_BASE_URL}/predictions/${pred.id}/retry`, {
+                                                                                method: 'POST',
+                                                                                headers: { 'Authorization': `Bearer ${token}` }
+                                                                            });
+                                                                            const data = await response.json();
+                                                                            if (response.ok && data.success) {
+                                                                                showNotification('✅ Analyse relancée avec succès!', 'success');
+                                                                                // Rafraîchir les prédictions
+                                                                                await refreshPredictions();
+                                                                            } else {
+                                                                                showNotification(data.error || 'Erreur lors de la relance', 'error');
+                                                                            }
+                                                                        } catch (err) {
+                                                                            showNotification('Erreur de connexion', 'error');
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    🔄 Relancer l'analyse IA
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    
                                                     <div style={{ 
                                                         padding: '16px', 
-                                                        background: 'rgba(245, 158, 11, 0.1)', 
+                                                        background: pred.aiError ? 'rgba(107, 114, 128, 0.1)' : 'rgba(245, 158, 11, 0.1)', 
                                                         borderRadius: '12px',
                                                         marginBottom: '12px'
                                                     }}>
-                                                        <p style={{ color: 'var(--accent-gold)', fontWeight: '500', margin: '0 0 8px' }}>
-                                                            📋 Analyse terminée - En attente de validation
+                                                        <p style={{ color: pred.aiError ? 'var(--text-secondary)' : 'var(--accent-gold)', fontWeight: '500', margin: '0 0 8px' }}>
+                                                            📋 Analyse terminée{pred.isDemo ? ' (Mode démo)' : ''} - En attente de validation
                                                         </p>
                                                         <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: 0 }}>
-                                                            Consultez les options recommandées et validez vos choix
+                                                            {pred.aiError 
+                                                                ? 'Vous pouvez utiliser ces résultats ou relancer l\'analyse' 
+                                                                : 'Consultez les options recommandées et validez vos choix'}
                                                         </p>
                                                     </div>
                                                     
@@ -5657,6 +5715,126 @@
                                             </div>
                                         </div>
                                     )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Avertissement si l'IA a échoué */}
+                        {strategyData?.aiErrors?.length > 0 && (
+                            <div className="card animate-fade-in" style={{ 
+                                marginBottom: '16px',
+                                background: 'rgba(239, 68, 68, 0.1)',
+                                border: '1px solid rgba(239, 68, 68, 0.3)'
+                            }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                                    <span style={{ fontSize: '1.3rem' }}>⚠️</span>
+                                    <div>
+                                        <h4 style={{ margin: 0, color: '#ef4444', fontSize: '0.95rem' }}>
+                                            {strategyData.usedFallback ? 'Analyse de secours utilisée' : 'Erreur lors de l\'analyse IA'}
+                                        </h4>
+                                        <p style={{ margin: '4px 0 0', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                                            {strategyData.warningMessage || `${strategyData.aiErrors.map(e => e.engine).join(' et ')} a rencontré une erreur de connexion`}
+                                        </p>
+                                    </div>
+                                </div>
+                                
+                                {/* Liste des erreurs */}
+                                <div style={{
+                                    padding: '10px',
+                                    background: 'rgba(0,0,0,0.2)',
+                                    borderRadius: '8px',
+                                    marginBottom: '10px',
+                                    fontSize: '0.75rem'
+                                }}>
+                                    {strategyData.aiErrors.map((err, i) => (
+                                        <div key={i} style={{ 
+                                            display: 'flex', 
+                                            justifyContent: 'space-between',
+                                            padding: '4px 0',
+                                            borderBottom: i < strategyData.aiErrors.length - 1 ? '1px solid var(--border-color)' : 'none'
+                                        }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>
+                                                {err.engine === 'claude' ? '🧠 Claude' : '🔮 DeepSeek'}:
+                                            </span>
+                                            <span style={{ color: err.retryable ? '#f59e0b' : '#ef4444' }}>
+                                                {err.message?.substring(0, 40)}...
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                                
+                                {/* Boutons d'action */}
+                                <div style={{ display: 'flex', gap: '10px' }}>
+                                    {strategyData.canRetry && (
+                                        <button
+                                            className="btn btn-primary"
+                                            style={{
+                                                flex: 1,
+                                                padding: '12px',
+                                                background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                                                border: 'none',
+                                                fontSize: '0.85rem',
+                                                fontWeight: '600'
+                                            }}
+                                            onClick={async () => {
+                                                showNotification('🔄 Relance de l\'analyse en cours...', 'info');
+                                                setIsGenerating(true);
+                                                try {
+                                                    const token = await getValidToken();
+                                                    const response = await fetch(`${API_BASE_URL}/hedging/retry`, {
+                                                        method: 'POST',
+                                                        headers: {
+                                                            'Authorization': `Bearer ${token}`,
+                                                            'Content-Type': 'application/json'
+                                                        },
+                                                        body: JSON.stringify({
+                                                            predictionId: currentPrediction?.id,
+                                                            options: selectedOptions.length > 0 ? selectedOptions : currentPrediction?.selectedOptions,
+                                                            currentScore: strategyData?.matchAnalysis?.currentScore || { home: 0, away: 0 },
+                                                            currentElapsed: strategyData?.calculations?.timeRemaining ? 90 - strategyData.calculations.timeRemaining : 45,
+                                                            fixtureId: currentPrediction?.matchInfo?.fixtureId,
+                                                            matchInfo: currentPrediction?.matchInfo
+                                                        })
+                                                    });
+                                                    const data = await response.json();
+                                                    if (response.ok && data.strategy) {
+                                                        setRecalculatedStrategies(data.strategy);
+                                                        if (!data.strategy.aiErrors || data.strategy.aiErrors.length === 0) {
+                                                            showNotification('✅ Analyse IA relancée avec succès!', 'success');
+                                                        } else if (data.strategy.usedFallback) {
+                                                            showNotification('⚠️ Analyse locale utilisée (IA indisponible)', 'warning');
+                                                        } else {
+                                                            showNotification('Analyse mise à jour', 'info');
+                                                        }
+                                                    } else {
+                                                        showNotification(data.error || 'Erreur lors de la relance', 'error');
+                                                    }
+                                                } catch (err) {
+                                                    console.error('Retry error:', err);
+                                                    showNotification('Erreur de connexion. Veuillez réessayer.', 'error');
+                                                } finally {
+                                                    setIsGenerating(false);
+                                                }
+                                            }}
+                                            disabled={isGenerating}
+                                        >
+                                            {isGenerating ? '⏳ Analyse en cours...' : '🔄 Relancer l\'analyse IA'}
+                                        </button>
+                                    )}
+                                    
+                                    <button
+                                        className="btn btn-secondary"
+                                        style={{
+                                            flex: 1,
+                                            padding: '12px',
+                                            background: 'rgba(107, 114, 128, 0.2)',
+                                            border: '1px solid var(--border-color)',
+                                            fontSize: '0.85rem'
+                                        }}
+                                        onClick={() => setShowBreakEvenModal(true)}
+                                    >
+                                        🧮 Calcul manuel
+                                    </button>
                                 </div>
                             </div>
                         )}
